@@ -1,4 +1,4 @@
-from gdelt_api import fetch_articles
+from src.gdelt_api import fetch_articles
 
 def main():
     print("Global News Monitor starting...")
