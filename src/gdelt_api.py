@@ -15,7 +15,7 @@ BACKOFF_FACTOR = 2.0
 INITIAL_BACKOFF_SECONDS = 1.0
 REQUESTS_PER_SECOND = 0.5
 MIN_REQUEST_INTERVAL_SECONDS = 1.0 / REQUESTS_PER_SECOND
-USER_AGENT = "Global-News-Monitor/1.0 (+https://github.com/your-org/global-news-monitor)"
+USER_AGENT = "Global-News-Monitor/1.0 (+https://github.com/fegalvan/Global-News-Monitor)"
 RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 logger = logging.getLogger(__name__)
