@@ -1,14 +1,17 @@
-from src.gdelt_api import fetch_articles
+from src.gdelt_events import fetch_latest_events
 
 def main():
     print("Global News Monitor starting...")
 
-    data = fetch_articles()
+    events = fetch_latest_events()
 
-    articles = data.get("articles", [])
-
-    for article in articles[:5]:
-        print(article["title"], "-", article["sourcecountry"])
+    for event in events[:5]:
+        actor1 = event.get("Actor1Name") or "Unknown"
+        actor2 = event.get("Actor2Name") or "Unknown"
+        event_code = event.get("EventCode") or "Unknown"
+        country = event.get("ActionGeo_CountryCode") or "Unknown"
+        print(f"[EVENT] {actor1} → {actor2} | {event_code} | {country}")
 
 if __name__ == "__main__":
     main()
+    
