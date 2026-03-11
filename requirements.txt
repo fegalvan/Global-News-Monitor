@@ -1,1 +1,3 @@
 # project dependencies will go here
+requests
+pandas
