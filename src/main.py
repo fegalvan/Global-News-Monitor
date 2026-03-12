@@ -138,7 +138,21 @@ def print_event_line(event: dict[str, str]) -> None:
     actor2 = event.get("Actor2Name") or "Unknown"
     event_code = event.get("EventCode") or "Unknown"
     event_label = get_event_label(event_code)
-    print(f"{actor1} \u2192 {actor2} | {event_label} ({event_code})")
+    country = event.get("ActionGeo_CountryCode")
+    lat = event.get("ActionGeo_Lat")
+    lon = event.get("ActionGeo_Long")
+
+    if not country:
+        country = "Unknown"
+
+    try:
+        lat = f"{float(lat):.2f}"
+        lon = f"{float(lon):.2f}"
+    except (TypeError, ValueError):
+        lat = "Unknown"
+        lon = "Unknown"
+
+    print(f"{actor1} \u2192 {actor2} | {event_label} ({event_code}) | {country} | {lat}, {lon}")
 
 
 def main():

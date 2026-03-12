@@ -45,7 +45,7 @@ FIELD_INDEXES = {
     "Actor1Name": 6,
     "Actor2Name": 16,
     "EventCode": 26,
-    "ActionGeo_CountryCode": 51,
+    "ActionGeo_CountryCode": 53,
     "ActionGeo_Lat": 56,
     "ActionGeo_Long": 57,
     "AvgTone": 34,
