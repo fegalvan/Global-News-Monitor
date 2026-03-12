@@ -138,6 +138,7 @@ def print_event_line(event: dict[str, str]) -> None:
     actor2 = event.get("Actor2Name") or "Unknown"
     event_code = event.get("EventCode") or "Unknown"
     event_label = get_event_label(event_code)
+    location = event.get("ActionGeo_FullName") or "Unknown"
     country = event.get("ActionGeo_CountryCode")
     lat = event.get("ActionGeo_Lat")
     lon = event.get("ActionGeo_Long")
@@ -152,7 +153,10 @@ def print_event_line(event: dict[str, str]) -> None:
         lat = "Unknown"
         lon = "Unknown"
 
-    print(f"{actor1} \u2192 {actor2} | {event_label} ({event_code}) | {country} | {lat}, {lon}")
+    print(
+        f"{actor1} \u2192 {actor2} | {event_label} ({event_code}) | "
+        f"{location} | {country} | {lat}, {lon}"
+    )
 
 
 def main():

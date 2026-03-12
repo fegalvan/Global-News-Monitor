@@ -6,26 +6,33 @@ import zipfile
 import src.gdelt_events as gdelt_events
 
 
-# quick test just to make sure the important fields exist in the dict
+# quick test just to make sure the important fields exist in the tuple
 # if these keys disappear the parser would break
+def test_fields_to_keep_contains_expected_keys():
+    assert "Actor1Name" in gdelt_events.FIELDS_TO_KEEP
+    assert "Actor2Name" in gdelt_events.FIELDS_TO_KEEP
+    assert "EventCode" in gdelt_events.FIELDS_TO_KEEP
+    assert "ActionGeo_FullName" in gdelt_events.FIELDS_TO_KEEP
+
+
 def test_field_indexes_contains_expected_keys():
-    assert "Actor1Name" in gdelt_events.FIELD_INDEXES
-    assert "Actor2Name" in gdelt_events.FIELD_INDEXES
-    assert "EventCode" in gdelt_events.FIELD_INDEXES
+    assert gdelt_events.FIELD_INDEXES["Actor1Name"] == 6
+    assert gdelt_events.FIELD_INDEXES["Actor2Name"] == 16
+    assert gdelt_events.FIELD_INDEXES["EventCode"] == 26
+    assert gdelt_events.FIELD_INDEXES["ActionGeo_FullName"] == 52
 
 
 # this test checks that our zip + csv parser works
 # instead of downloading a real gdelt dataset we fake a tiny one in memory
 def test_read_zip_csv_rows_parses_in_memory_zip():
-
-    # make a fake row with enough columns to match the gdelt dataset
-    row = [""] * (gdelt_events.MAX_FIELD_INDEX + 1)
-
-    # fill in only the fields our parser actually reads
+    row = [""] * (max(gdelt_events.FIELD_INDEXES.values()) + 1)
     row[gdelt_events.FIELD_INDEXES["SQLDATE"]] = "20260311"
     row[gdelt_events.FIELD_INDEXES["Actor1Name"]] = "POLICE"
     row[gdelt_events.FIELD_INDEXES["Actor2Name"]] = "PROTESTERS"
     row[gdelt_events.FIELD_INDEXES["EventCode"]] = "190"
+    row[gdelt_events.FIELD_INDEXES["ActionGeo_FullName"]] = (
+        "Washington, District of Columbia, United States"
+    )
     row[gdelt_events.FIELD_INDEXES["ActionGeo_CountryCode"]] = "USA"
     row[gdelt_events.FIELD_INDEXES["ActionGeo_Lat"]] = "38.9072"
     row[gdelt_events.FIELD_INDEXES["ActionGeo_Long"]] = "-77.0369"
@@ -48,6 +55,7 @@ def test_read_zip_csv_rows_parses_in_memory_zip():
             "Actor1Name": "POLICE",
             "Actor2Name": "PROTESTERS",
             "EventCode": "190",
+            "ActionGeo_FullName": "Washington, District of Columbia, United States",
             "ActionGeo_CountryCode": "USA",
             "ActionGeo_Lat": "38.9072",
             "ActionGeo_Long": "-77.0369",

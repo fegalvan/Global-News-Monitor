@@ -33,26 +33,24 @@ FIELDS_TO_KEEP = (
     "Actor1Name",
     "Actor2Name",
     "EventCode",
+    "ActionGeo_FullName",
     "ActionGeo_CountryCode",
     "ActionGeo_Lat",
     "ActionGeo_Long",
     "AvgTone",
 )
 
-# column positions of those fields in the raw gdelt csv
 FIELD_INDEXES = {
     "SQLDATE": 1,
     "Actor1Name": 6,
     "Actor2Name": 16,
     "EventCode": 26,
+    "ActionGeo_FullName": 52,
     "ActionGeo_CountryCode": 53,
     "ActionGeo_Lat": 56,
     "ActionGeo_Long": 57,
     "AvgTone": 34,
 }
-
-# highest column index we access so we can skip short/broken rows
-MAX_FIELD_INDEX = max(FIELD_INDEXES.values())
 
 
 def _get_export_zip_url(session: requests.Session) -> str:
@@ -106,11 +104,6 @@ def _read_zip_csv_rows(zip_bytes: bytes) -> list[dict[str, Any]]:
             # go through each row in the dataset
             # each row represents a recorded global event extracted from news sources
             for row in reader:
-
-                # skip rows that don't have enough columns
-                if len(row) <= MAX_FIELD_INDEX:
-                    continue
-
                 try:
                     # build a smaller cleaner dictionary containing only the fields we want
                     # instead of keeping the full ~60 column gdelt dataset
