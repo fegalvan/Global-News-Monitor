@@ -1,3 +1,8 @@
+from __future__ import annotations
+
+import sys
+from uuid import uuid4
+
 from src.gdelt_events import fetch_latest_events
 
 EVENT_CODE_LABELS = {
@@ -159,7 +164,62 @@ def print_event_line(event: dict[str, str]) -> None:
     )
 
 
-def main():
+def run_ingest_command() -> int:
+    """Start a database-backed ingestion run.
+
+    Stage 1 intentionally stops after creating the run record and validating
+    database connectivity. The full polling and persistence pipeline will be
+    added in the next step.
+    """
+
+    run_id = uuid4()
+
+    print(f"Starting ingestion run {run_id}...")
+
+    # Import the database layer only for the ingestion command so the original
+    # console monitor can still load without requiring PostgreSQL dependencies.
+    from src.db import get_connection, transaction
+    from src.ingestion.repository import insert_ingestion_run, update_ingestion_run
+
+    connection = get_connection()
+    run_record_created = False
+
+    try:
+        with transaction(connection):
+            insert_ingestion_run(
+                connection=connection,
+                run_id=run_id,
+                trigger_mode="manual",
+                status="started",
+            )
+            run_record_created = True
+
+        print("Connected to PostgreSQL and created ingestion run record.")
+
+        with transaction(connection):
+            update_ingestion_run(
+                connection=connection,
+                run_id=run_id,
+                status="ready",
+            )
+    except Exception:
+        if run_record_created:
+            with transaction(connection):
+                update_ingestion_run(
+                    connection=connection,
+                    run_id=run_id,
+                    status="failed",
+                    error_summary="Ingestion initialization failed.",
+                    finished=True,
+                )
+        raise
+    finally:
+        connection.close()
+
+    return 0
+
+
+def run_console_monitor() -> int:
     print("Global News Monitor starting...")
 
     events = fetch_latest_events()
@@ -210,6 +270,17 @@ def main():
         for event in category_events:
             print_event_line(event)
 
+    return 0
+
+
+def main() -> int:
+    command = sys.argv[1] if len(sys.argv) > 1 else "monitor"
+
+    if command == "ingest":
+        return run_ingest_command()
+
+    return run_console_monitor()
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

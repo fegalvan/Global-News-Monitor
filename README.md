@@ -1,17 +1,18 @@
 # Global News Monitor
 
-Global News Monitor is a lightweight Python project for monitoring global events using the GDELT dataset, which updates every 15 minutes.
+Global News Monitor is a Python project for monitoring global events from GDELT. The project started as a console-based fetch-and-print tool and is now being refactored into a small ingestion pipeline with PostgreSQL as the source of truth.
 
 GDELT, the Global Database of Events, Language and Tone, is a large open dataset that extracts structured events from worldwide news coverage. It tracks actors, locations, event types, and sentiment across reporting from many countries and languages, and it updates continuously.
 
-This project builds a simple monitoring tool on top of that dataset by fetching the newest event export and summarizing recent events directly in the console.
+The current codebase still supports console summaries, and Stage 1 now adds the database foundation for persistent ingestion, export-level checkpointing, and deduplication.
 
 ## Features
 
 - Fetch latest GDELT event dataset
 - Extract key event fields
-- Convert event codes into readable labels
-- Display recent world events in the console
+- Convert event codes into readable labels for console output
+- Persist ingestion runs and raw events in PostgreSQL
+- Track export checkpoints for future incremental ingestion
 
 ## Example Output
 
@@ -46,23 +47,60 @@ This makes it much better for building a real-time event monitoring system.
 
 - Python
 - Requests
+- PostgreSQL
+- Psycopg
 - GDELT Event dataset
 
 ## Project Structure
 
-`src/main.py`  
-Entry point that runs the monitor and prints event summaries.
+`src/main.py`
+Entry point for both console monitoring and the new ingestion skeleton.
 
-`src/gdelt_events.py`  
+`src/gdelt_events.py`
 Handles downloading the newest GDELT dataset and parsing the CSV export.
 
-`tests/`  
+`src/db.py`
+Creates PostgreSQL connections, loads `DATABASE_URL`, and provides transaction helpers.
+
+`src/ingestion/repository.py`
+Contains repository functions for ingestion runs, export checkpoints, and raw event inserts.
+
+`sql/stage1_schema.sql`
+PostgreSQL DDL for Stage 1 ingestion tables.
+
+`tests/`
 Contains unit tests for the project.
+
+## PostgreSQL Setup
+
+PostgreSQL is now required for the ingestion command.
+
+Set the `DATABASE_URL` environment variable before running ingestion:
+
+```bash
+DATABASE_URL=postgresql://username:password@localhost:5432/global_news_monitor
+```
+
+If you prefer using a local `.env` file, `python-dotenv` is supported as an optional dependency.
+
+Apply the schema before your first ingestion run:
+
+```bash
+psql "$DATABASE_URL" -f sql/stage1_schema.sql
+```
 
 ## Running the Project
 
+Run the original console monitor:
+
 ```bash
 python -m src.main
+```
+
+Run the new ingestion skeleton:
+
+```bash
+python -m src.main ingest
 ```
 
 ## Running Tests
@@ -71,10 +109,12 @@ python -m src.main
 pytest
 ```
 
-## Future Plans
+## Architecture Direction
 
-- global event heatmap
-- event spike detection
-- trend monitoring
-- interactive dashboard
-- the visual aspect after i find a way to save/analyze the data well
+Stage 1 focuses on:
+
+- persistent ingestion metadata
+- export-level checkpoint tracking
+- raw event storage with database-enforced deduplication
+
+Later stages can build clustering, scoring, APIs, and dashboards on top of this stored event history.
