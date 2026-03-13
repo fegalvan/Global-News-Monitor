@@ -16,6 +16,7 @@ def test_fields_to_keep_contains_expected_keys():
 
 
 def test_field_indexes_contains_expected_keys():
+    assert gdelt_events.FIELD_INDEXES["GLOBALEVENTID"] == 0
     assert gdelt_events.FIELD_INDEXES["Actor1Name"] == 6
     assert gdelt_events.FIELD_INDEXES["Actor2Name"] == 16
     assert gdelt_events.FIELD_INDEXES["EventCode"] == 26
@@ -26,6 +27,7 @@ def test_field_indexes_contains_expected_keys():
 # instead of downloading a real gdelt dataset we fake a tiny one in memory
 def test_read_zip_csv_rows_parses_in_memory_zip():
     row = [""] * (max(gdelt_events.FIELD_INDEXES.values()) + 1)
+    row[gdelt_events.FIELD_INDEXES["GLOBALEVENTID"]] = "123456789"
     row[gdelt_events.FIELD_INDEXES["SQLDATE"]] = "20260311"
     row[gdelt_events.FIELD_INDEXES["Actor1Name"]] = "POLICE"
     row[gdelt_events.FIELD_INDEXES["Actor2Name"]] = "PROTESTERS"
@@ -51,6 +53,7 @@ def test_read_zip_csv_rows_parses_in_memory_zip():
     # check that the parser returned exactly the event we expected
     assert events == [
         {
+            "GLOBALEVENTID": "123456789",
             "SQLDATE": "20260311",
             "Actor1Name": "POLICE",
             "Actor2Name": "PROTESTERS",
@@ -95,7 +98,7 @@ def test_fetch_latest_events_returns_list_when_mocked(monkeypatch):
     monkeypatch.setattr(
         gdelt_events,
         "_get_export_zip_url",
-        lambda session: "http://example.com/latest.export.CSV.zip",
+        lambda session: "http://example.com/20240101000000.export.CSV.zip",
     )
 
     # replace the parser with one that returns our fake data
@@ -109,3 +112,12 @@ def test_fetch_latest_events_returns_list_when_mocked(monkeypatch):
 
     # and that the data matches what we mocked
     assert events == expected_events
+
+
+def test_parse_export_metadata_extracts_filename_and_timestamp():
+    metadata = gdelt_events.parse_export_metadata(
+        "http://data.gdeltproject.org/gdeltv2/20260313001500.export.CSV.zip"
+    )
+
+    assert metadata["export_filename"] == "20260313001500.export.CSV.zip"
+    assert metadata["export_time_utc"].isoformat() == "2026-03-13T00:15:00+00:00"

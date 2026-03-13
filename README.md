@@ -4,7 +4,7 @@ Global News Monitor is a Python project for monitoring global events from GDELT.
 
 GDELT, the Global Database of Events, Language and Tone, is a large open dataset that extracts structured events from worldwide news coverage. It tracks actors, locations, event types, and sentiment across reporting from many countries and languages, and it updates continuously.
 
-The current codebase still supports console summaries, and Stage 1 now adds the database foundation for persistent ingestion, export-level checkpointing, and deduplication.
+The current codebase still supports console summaries, and Stage 2 now connects the ingestion command to the latest GDELT 15-minute event export with PostgreSQL-backed checkpointing and deduplication.
 
 ## Features
 
@@ -54,7 +54,7 @@ This makes it much better for building a real-time event monitoring system.
 ## Project Structure
 
 `src/main.py`
-Entry point for both console monitoring and the new ingestion skeleton.
+Entry point for both console monitoring and PostgreSQL-backed ingestion.
 
 `src/gdelt_events.py`
 Handles downloading the newest GDELT dataset and parsing the CSV export.
@@ -66,14 +66,14 @@ Creates PostgreSQL connections, loads `DATABASE_URL`, and provides transaction h
 Contains repository functions for ingestion runs, export checkpoints, and raw event inserts.
 
 `sql/stage1_schema.sql`
-PostgreSQL DDL for Stage 1 ingestion tables.
+PostgreSQL DDL for the ingestion tables required by the current pipeline.
 
 `tests/`
 Contains unit tests for the project.
 
 ## PostgreSQL Setup
 
-PostgreSQL is now required for the ingestion command.
+PostgreSQL is required for `python -m src.main ingest`.
 
 Set the `DATABASE_URL` environment variable before running ingestion:
 
@@ -91,13 +91,13 @@ psql "$DATABASE_URL" -f sql/stage1_schema.sql
 
 ## Running the Project
 
-Run the original console monitor:
+Run the original console monitor. This remains the default behavior:
 
 ```bash
 python -m src.main
 ```
 
-Run the new ingestion skeleton:
+Run ingestion for the latest GDELT event export. This requires `DATABASE_URL` and the schema to already be applied:
 
 ```bash
 python -m src.main ingest
@@ -111,8 +111,9 @@ pytest
 
 ## Architecture Direction
 
-Stage 1 focuses on:
+The current ingestion stage focuses on:
 
+- fetching the latest GDELT 15-minute event export
 - persistent ingestion metadata
 - export-level checkpoint tracking
 - raw event storage with database-enforced deduplication

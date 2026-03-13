@@ -11,7 +11,10 @@ import csv
 import io
 import re
 import zipfile
+from datetime import datetime, timezone
+from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -26,9 +29,11 @@ USER_AGENT = "Global-News-Monitor/1.0"
 
 # regex to grab the .csv.zip export link from lastupdate.txt
 CSV_URL_PATTERN = re.compile(r"https?://\S+?\.export\.CSV\.zip")
+EXPORT_FILENAME_PATTERN = re.compile(r"(?P<timestamp>\d{14})\.export\.CSV\.zip$")
 
 # fields we actually care about from the giant gdelt dataset
 FIELDS_TO_KEEP = (
+    "GLOBALEVENTID",
     "SQLDATE",
     "Actor1Name",
     "Actor2Name",
@@ -41,6 +46,7 @@ FIELDS_TO_KEEP = (
 )
 
 FIELD_INDEXES = {
+    "GLOBALEVENTID": 0,
     "SQLDATE": 1,
     "Actor1Name": 6,
     "Actor2Name": 16,
@@ -70,6 +76,61 @@ def _get_export_zip_url(session: requests.Session) -> str:
         raise ValueError("could not find an export csv zip url in lastupdate.txt")
 
     return match.group(0)
+
+
+def parse_export_metadata(export_url: str) -> dict[str, Any]:
+    """Extract filename and UTC export time from a GDELT export URL."""
+
+    export_filename = PurePosixPath(urlparse(export_url).path).name
+    match = EXPORT_FILENAME_PATTERN.search(export_filename)
+    if not match:
+        raise ValueError(f"could not parse export timestamp from filename: {export_filename}")
+
+    export_time_utc = datetime.strptime(
+        match.group("timestamp"),
+        "%Y%m%d%H%M%S",
+    ).replace(tzinfo=timezone.utc)
+
+    return {
+        "export_url": export_url,
+        "export_filename": export_filename,
+        "export_time_utc": export_time_utc,
+    }
+
+
+def get_latest_export_metadata(
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    """Fetch lastupdate.txt and return the latest event export metadata."""
+
+    session = session or requests.Session()
+    export_url = _get_export_zip_url(session)
+    return parse_export_metadata(export_url)
+
+
+def download_export_zip(
+    export_url: str,
+    session: requests.Session | None = None,
+) -> bytes:
+    """Download a GDELT export zip into memory."""
+
+    session = session or requests.Session()
+    response = session.get(
+        export_url,
+        headers={"User-Agent": USER_AGENT},
+        timeout=DEFAULT_TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.content
+
+
+def fetch_export_rows(
+    export_url: str,
+    session: requests.Session | None = None,
+) -> list[dict[str, Any]]:
+    """Download and parse a specific GDELT export URL."""
+
+    return _read_zip_csv_rows(download_export_zip(export_url, session=session))
 
 
 def _read_zip_csv_rows(zip_bytes: bytes) -> list[dict[str, Any]]:
@@ -133,16 +194,7 @@ def fetch_latest_events() -> list[dict[str, Any]]:
     session = requests.Session()
 
     # get the link to the newest events dataset
-    zip_url = _get_export_zip_url(session)
-
-    # download the zip file containing the events csv
-    # response.content now contains the raw zip file bytes in memory
-    response = session.get(
-        zip_url,
-        headers={"User-Agent": USER_AGENT},
-        timeout=DEFAULT_TIMEOUT,
-    )
-    response.raise_for_status()
+    metadata = get_latest_export_metadata(session)
 
     # pass those bytes into the parser which reads everything directly from ram
-    return _read_zip_csv_rows(response.content)
+    return fetch_export_rows(metadata["export_url"], session=session)
