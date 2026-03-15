@@ -32,6 +32,7 @@ def test_read_zip_csv_rows_parses_in_memory_zip():
     row[gdelt_events.FIELD_INDEXES["Actor1Name"]] = "POLICE"
     row[gdelt_events.FIELD_INDEXES["Actor2Name"]] = "PROTESTERS"
     row[gdelt_events.FIELD_INDEXES["EventCode"]] = "190"
+    row[gdelt_events.FIELD_INDEXES["GoldsteinScale"]] = "-3.5"
     row[gdelt_events.FIELD_INDEXES["ActionGeo_FullName"]] = (
         "Washington, District of Columbia, United States"
     )
@@ -39,6 +40,7 @@ def test_read_zip_csv_rows_parses_in_memory_zip():
     row[gdelt_events.FIELD_INDEXES["ActionGeo_Lat"]] = "38.9072"
     row[gdelt_events.FIELD_INDEXES["ActionGeo_Long"]] = "-77.0369"
     row[gdelt_events.FIELD_INDEXES["AvgTone"]] = "-2.5"
+    row[gdelt_events.FIELD_INDEXES["SOURCEURL"]] = "https://example.com/story"
 
     # create an in-memory zip file (so we dont write anything to disk)
     zip_buffer = io.BytesIO()
@@ -58,11 +60,13 @@ def test_read_zip_csv_rows_parses_in_memory_zip():
             "Actor1Name": "POLICE",
             "Actor2Name": "PROTESTERS",
             "EventCode": "190",
+            "GoldsteinScale": "-3.5",
             "ActionGeo_FullName": "Washington, District of Columbia, United States",
             "ActionGeo_CountryCode": "USA",
             "ActionGeo_Lat": "38.9072",
             "ActionGeo_Long": "-77.0369",
             "AvgTone": "-2.5",
+            "SOURCEURL": "https://example.com/story",
         }
     ]
 

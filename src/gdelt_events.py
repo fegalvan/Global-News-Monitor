@@ -10,10 +10,11 @@ from __future__ import annotations
 import csv
 import io
 import re
+import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import urlparse
 
 import requests
@@ -24,6 +25,8 @@ LAST_UPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
 
 # max time we wait for a request before giving up
 DEFAULT_TIMEOUT = 60
+DOWNLOAD_CHUNK_BYTES = 1024 * 256
+SPOOL_MAX_MEMORY_BYTES = 1024 * 1024 * 8
 
 # simple user agent so gdelt knows what program is requesting data
 USER_AGENT = "Global-News-Monitor/1.0"
@@ -39,11 +42,13 @@ FIELDS_TO_KEEP = (
     "Actor1Name",
     "Actor2Name",
     "EventCode",
+    "GoldsteinScale",
     "ActionGeo_FullName",
     "ActionGeo_CountryCode",
     "ActionGeo_Lat",
     "ActionGeo_Long",
     "AvgTone",
+    "SOURCEURL",
 )
 
 FIELD_INDEXES = {
@@ -52,11 +57,13 @@ FIELD_INDEXES = {
     "Actor1Name": 6,
     "Actor2Name": 16,
     "EventCode": 26,
+    "GoldsteinScale": 30,
     "ActionGeo_FullName": 52,
     "ActionGeo_CountryCode": 53,
     "ActionGeo_Lat": 56,
     "ActionGeo_Long": 57,
     "AvgTone": 34,
+    "SOURCEURL": 60,
 }
 
 RETRY_POLICY = dict(
@@ -136,6 +143,32 @@ def download_export_zip(
     return response.content
 
 
+@retry(**RETRY_POLICY)
+def download_export_zip_to_spool(
+    export_url: str,
+    session: requests.Session | None = None,
+) -> tempfile.SpooledTemporaryFile[bytes]:
+    """Download a GDELT export zip into a spooled temp file for streaming reads."""
+
+    # this keeps giant exports from living as one huge bytes object in memory
+    session = session or requests.Session()
+    response = session.get(
+        export_url,
+        headers={"User-Agent": USER_AGENT},
+        timeout=DEFAULT_TIMEOUT,
+        stream=True,
+    )
+    response.raise_for_status()
+
+    spool = tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES)
+    for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
+        if not chunk:
+            continue
+        spool.write(chunk)
+    spool.seek(0)
+    return spool
+
+
 def fetch_export_rows(
     export_url: str,
     session: requests.Session | None = None,
@@ -146,7 +179,24 @@ def fetch_export_rows(
     return _read_zip_csv_rows(download_export_zip(export_url, session=session))
 
 
+def iter_export_rows(
+    export_url: str,
+    session: requests.Session | None = None,
+) -> Iterator[dict[str, Any]]:
+    """Yield parsed event rows one by one from a specific export URL."""
+
+    spool = download_export_zip_to_spool(export_url, session=session)
+    try:
+        yield from _iter_zip_csv_rows(spool)
+    finally:
+        spool.close()
+
+
 def _read_zip_csv_rows(zip_bytes: bytes) -> list[dict[str, Any]]:
+    return list(_iter_zip_csv_rows(io.BytesIO(zip_bytes)))
+
+
+def _iter_zip_csv_rows(zip_stream: io.BytesIO | tempfile.SpooledTemporaryFile[bytes]) -> Iterator[dict[str, Any]]:
     # zip_bytes came from response.content earlier, meaning the entire zip file
     # already exists in memory as raw bytes. instead of saving the zip file to disk
     # we wrap it with BytesIO which makes python treat those bytes like a file.
@@ -156,7 +206,7 @@ def _read_zip_csv_rows(zip_bytes: bytes) -> list[dict[str, Any]]:
     # internet → requests downloads bytes → bytes live in ram →
     # BytesIO pretends those bytes are a file → zipfile reads it
 
-    with zipfile.ZipFile(io.BytesIO(zip_bytes)) as zipped_file:
+    with zipfile.ZipFile(zip_stream) as zipped_file:
 
         # look inside the zip and find the actual csv dataset
         csv_names = [name for name in zipped_file.namelist() if name.endswith(".CSV")]
@@ -173,8 +223,6 @@ def _read_zip_csv_rows(zip_bytes: bytes) -> list[dict[str, Any]]:
             # gdelt uses tab-separated values instead of commas
             reader = csv.reader(text_stream, delimiter="\t")
 
-            events: list[dict[str, Any]] = []
-
             # go through each row in the dataset
             # each row represents a recorded global event extracted from news sources
             for row in reader:
@@ -189,14 +237,7 @@ def _read_zip_csv_rows(zip_bytes: bytes) -> list[dict[str, Any]]:
                     # sometimes rows are messy so we just skip them
                     continue
 
-                events.append(event)
-
-            # at this point we return a list like:
-            # [
-            #   {Actor1Name: ..., Actor2Name: ..., EventCode: ...},
-            #   {Actor1Name: ..., Actor2Name: ..., EventCode: ...}
-            # ]
-            return events
+                yield event
 
 
 def fetch_latest_events() -> list[dict[str, Any]]:

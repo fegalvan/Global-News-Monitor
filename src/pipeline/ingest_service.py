@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
+from itertools import islice
+from typing import Iterable, Iterator
 from uuid import uuid4
 
 from src.db import get_connection, transaction
-from src.gdelt_events import fetch_export_rows, get_latest_export_metadata, parse_export_metadata
+from src.gdelt_events import get_latest_export_metadata, iter_export_rows, parse_export_metadata
 from src.ingestion.repository import (
-    bulk_insert_events,
     claim_checkpoint,
-    insert_checkpoint,
     insert_ingestion_run,
+    insert_checkpoint,
+    insert_raw_and_normalized_batch,
     mark_checkpoint_completed,
     mark_checkpoint_failed,
     reset_stale_processing_checkpoints,
@@ -20,6 +22,16 @@ from src.ingestion.transform import SOURCE, normalize_event_for_insert
 
 logger = logging.getLogger(__name__)
 STALE_CHECKPOINT_AFTER = timedelta(minutes=30)
+BATCH_SIZE = 1000
+
+
+def _iter_chunks(rows: Iterable[dict[str, object]], chunk_size: int) -> Iterator[list[dict[str, object]]]:
+    iterator = iter(rows)
+    while True:
+        chunk = list(islice(iterator, chunk_size))
+        if not chunk:
+            return
+        yield chunk
 
 
 def ingest_latest_export() -> dict[str, int | str]:
@@ -152,34 +164,43 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             export_filename,
         )
 
-        # this is where we download the gdelt export
-        raw_events = fetch_export_rows(export_url)
-        logger.info(
-            "rows_parsed source=%s export_filename=%s row_count=%s",
-            checkpoint_source,
-            export_filename,
-            len(raw_events),
-        )
+        raw_row_count = 0
+        inserted_row_count = 0
+        inserted_normalized_count = 0
 
-        normalized_events = [
-            normalize_event_for_insert(
-                event,
-                export_time_utc=export_time_utc,
-                export_url=export_url,
-                ingestion_run_id=run_id,
+        # this is where we stream the gdelt export rows and process them in chunks
+        export_rows = iter_export_rows(export_url)
+        for chunk in _iter_chunks(export_rows, BATCH_SIZE):
+            raw_row_count += len(chunk)
+            normalized_events = [
+                normalize_event_for_insert(
+                    event,
+                    export_time_utc=export_time_utc,
+                    export_url=export_url,
+                    ingestion_run_id=run_id,
+                )
+                for event in chunk
+            ]
+            logger.info(
+                "rows_parsed source=%s export_filename=%s chunk_size=%s rows_seen_total=%s",
+                checkpoint_source,
+                export_filename,
+                len(chunk),
+                raw_row_count,
             )
-            for event in raw_events
-        ]
 
-        raw_row_count = len(normalized_events)
+            with transaction(connection):
+                inserted_raw_chunk, inserted_normalized_chunk = insert_raw_and_normalized_batch(
+                    connection=connection,
+                    events=normalized_events,
+                )
+
+            inserted_row_count += inserted_raw_chunk
+            inserted_normalized_count += inserted_normalized_chunk
+
+        duplicate_row_count = raw_row_count - inserted_row_count
 
         with transaction(connection):
-            inserted_row_count = bulk_insert_events(
-                connection=connection,
-                events=normalized_events,
-            )
-            duplicate_row_count = raw_row_count - inserted_row_count
-
             mark_checkpoint_completed(
                 connection=connection,
                 source=checkpoint_source,
@@ -204,6 +225,12 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             checkpoint_source,
             export_filename,
             inserted_row_count,
+        )
+        logger.info(
+            "normalized_rows_inserted source=%s export_filename=%s row_count=%s",
+            checkpoint_source,
+            export_filename,
+            inserted_normalized_count,
         )
         logger.info(
             "duplicates_skipped source=%s export_filename=%s row_count=%s",

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import sys
 
+from src.domain.events.categorization import categorize_event
 from src.gdelt_events import fetch_latest_events
 from src.pipeline.ingest_service import ingest_latest_export
 
@@ -84,42 +85,13 @@ ROOT_EVENT_LABELS = {
     "20": "Unconventional violence",
 }
 
-EVENT_CATEGORIES = {
-    "01": "diplomacy",
-    "02": "diplomacy",
-    "03": "diplomacy",
-    "04": "diplomacy",
-    "05": "diplomacy",
-    "06": "economics",
-    "07": "economics",
-    "08": "economics",
-    "09": "politics",
-    "10": "politics",
-    "11": "politics",
-    "12": "politics",
-    "14": "protest",
-    "15": "protest",
-    "17": "conflict",
-    "18": "conflict",
-    "19": "conflict",
-    "20": "conflict",
-}
-
-TECH_EVENT_CODES = {"155", "176", "064"}
-CRISIS_EVENT_CODES = {"023", "024", "025"}
 MAX_EVENTS_PER_CATEGORY = 3
 MAX_BREAKING_EVENTS = 5
 
 
 def get_event_category(event_code: str) -> str:
-    if event_code in TECH_EVENT_CODES:
-        return "tech"
-
-    if event_code in CRISIS_EVENT_CODES:
-        return "crisis"
-
-    prefix = event_code[:2]
-    return EVENT_CATEGORIES.get(prefix, "other")
+    # keeping this helper for backwards compatibility with console monitor code
+    return categorize_event({"event_code": event_code}).primary_category
 
 
 def get_event_label(event_code: str) -> str:
@@ -189,7 +161,7 @@ def run_console_monitor() -> int:
         "politics": [],
         "protest": [],
         "conflict": [],
-        "tech": [],
+        "cyber": [],
         "crisis": [],
     }
 
@@ -197,7 +169,7 @@ def run_console_monitor() -> int:
 
     for event in events:
         event_code = event.get("EventCode") or ""
-        category = get_event_category(event_code)
+        category = categorize_event(event).primary_category
         avg_tone = get_avg_tone(event)
 
         if (

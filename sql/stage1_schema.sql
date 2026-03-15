@@ -66,3 +66,9 @@ CREATE INDEX IF NOT EXISTS idx_raw_events_event_code
 
 CREATE INDEX IF NOT EXISTS idx_raw_events_country_code
     ON raw_events (action_geo_country_code);
+
+CREATE INDEX IF NOT EXISTS idx_gdelt_export_checkpoints_status_started
+    ON gdelt_export_checkpoints (source, status, processing_started_at);
+
+CREATE INDEX IF NOT EXISTS idx_gdelt_export_checkpoints_status_time
+    ON gdelt_export_checkpoints (status, export_time_utc);

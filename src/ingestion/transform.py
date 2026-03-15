@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import date, datetime
+from datetime import date, datetime, time, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 from uuid import UUID
+
+from src.domain.events.categorization import categorize_event
 
 SOURCE = "gdelt_events_v2"
 WHITESPACE_PATTERN = re.compile(r"\s+")
@@ -96,6 +98,24 @@ def normalize_event_for_insert(
 ) -> dict[str, Any]:
     """Map a parsed GDELT row to the raw_events table shape."""
 
+    sql_date = _parse_sql_date(event.get("SQLDATE"))
+    # gdelt event export has date but not always exact time, so midnight UTC is a practical fallback
+    event_time_utc = (
+        datetime.combine(sql_date, time.min, tzinfo=timezone.utc)
+        if sql_date is not None
+        else export_time_utc
+    )
+    source_url = _clean_text(event.get("SOURCEURL"))
+    category_result = categorize_event(
+        {
+            "event_code": _clean_text(event.get("EventCode")),
+            "actor1_name": _clean_text(event.get("Actor1Name")),
+            "actor2_name": _clean_text(event.get("Actor2Name")),
+            "action_geo_full_name": _clean_text(event.get("ActionGeo_FullName")),
+            "source_url": source_url,
+        }
+    )
+
     return {
         "source": SOURCE,
         "export_time_utc": export_time_utc,
@@ -103,8 +123,8 @@ def normalize_event_for_insert(
         "ingestion_run_id": ingestion_run_id,
         "dedupe_key": build_dedupe_key(event),
         "global_event_id": _parse_int(event.get("GLOBALEVENTID")),
-        "sql_date": _parse_sql_date(event.get("SQLDATE")),
-        "event_time_utc": None,
+        "sql_date": sql_date,
+        "event_time_utc": event_time_utc,
         "actor1_name": _clean_text(event.get("Actor1Name")),
         "actor2_name": _clean_text(event.get("Actor2Name")),
         "event_code": _clean_text(event.get("EventCode")),
@@ -113,5 +133,11 @@ def normalize_event_for_insert(
         "action_geo_lat": _parse_decimal(event.get("ActionGeo_Lat")),
         "action_geo_long": _parse_decimal(event.get("ActionGeo_Long")),
         "avg_tone": _parse_decimal(event.get("AvgTone")),
+        "goldstein_score": _parse_decimal(event.get("GoldsteinScale")),
+        "source_url": source_url,
+        "primary_category": category_result.primary_category,
+        "secondary_category": category_result.secondary_category,
+        "category_confidence": Decimal(str(category_result.category_confidence)),
+        "category_reason": category_result.category_reason,
         "raw_payload": dict(event),
     }

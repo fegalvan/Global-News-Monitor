@@ -51,6 +51,8 @@ def test_normalize_event_for_insert_maps_expected_fields():
             "ActionGeo_Lat": "38.9072",
             "ActionGeo_Long": "-77.0369",
             "AvgTone": "-2.5",
+            "GoldsteinScale": "-5.0",
+            "SOURCEURL": "https://example.com/cyber-attack-report",
         },
         export_time_utc=datetime(2026, 3, 13, 0, 15, tzinfo=timezone.utc),
         export_url="http://data.gdeltproject.org/gdeltv2/20260313001500.export.CSV.zip",
@@ -62,4 +64,8 @@ def test_normalize_event_for_insert_maps_expected_fields():
     assert normalized["action_geo_lat"] == Decimal("38.9072")
     assert normalized["action_geo_long"] == Decimal("-77.0369")
     assert normalized["avg_tone"] == Decimal("-2.5")
-    assert normalized["event_time_utc"] is None
+    assert normalized["goldstein_score"] == Decimal("-5.0")
+    assert normalized["source_url"] == "https://example.com/cyber-attack-report"
+    assert normalized["event_time_utc"].isoformat() == "2026-03-13T00:00:00+00:00"
+    assert normalized["primary_category"] == "cyber"
+    assert normalized["category_confidence"] > Decimal("0.8")

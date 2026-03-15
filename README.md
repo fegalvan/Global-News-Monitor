@@ -49,6 +49,7 @@ This makes it much better for building a real-time event monitoring system.
 
 - Python
 - Requests
+- Tenacity
 - PostgreSQL
 - Psycopg
 - GDELT Event dataset
@@ -63,6 +64,9 @@ Handles export discovery, retrying GDELT downloads, and parsing the CSV export.
 
 `src/pipeline/ingest_service.py`
 Runs the ingestion workflow for the latest export or a specific export URL.
+
+`src/domain/events/categorization.py`
+Contains deterministic category rules used by both ingestion and console monitoring.
 
 `src/db.py`
 Creates PostgreSQL connections, loads `DATABASE_URL`, and provides transaction helpers.
@@ -87,9 +91,33 @@ The ingestion flow is now split into layers so it can scale a little better:
 2. `src/pipeline/ingest_service.py` runs the orchestration.
 3. `src/gdelt_events.py` talks to GDELT and parses the export.
 4. `src/ingestion/transform.py` normalizes raw rows for insert.
-5. `src/ingestion/repository.py` writes checkpoints and events to PostgreSQL.
+5. `src/domain/events/categorization.py` assigns first-class categories and confidence.
+6. `src/ingestion/repository.py` writes checkpoints and events to PostgreSQL.
 
 That means the CLI stays thin while the actual ingest logic can be reused later by schedulers, jobs, or an API.
+
+```mermaid
+flowchart LR
+    A["python -m src.main ingest"] --> B["src/pipeline/ingest_service.py"]
+    B --> C["src/gdelt_events.py (download + parse)"]
+    C --> D["src/ingestion/transform.py"]
+    D --> E["src/domain/events/categorization.py"]
+    E --> F["src/ingestion/repository.py"]
+    F --> G["raw_events"]
+    F --> H["normalized_events"]
+```
+
+## Ingestion Flow
+
+The ingestion service processes rows in chunks instead of loading one giant in-memory list.
+
+1. Discover latest export URL from GDELT.
+2. Claim checkpoint (or skip if already completed).
+3. Stream rows from the export ZIP.
+4. Normalize each row and categorize it.
+5. Insert into `raw_events` (immutable landing table).
+6. For rows that were newly inserted, insert into `normalized_events`.
+7. Update checkpoint metrics and ingestion run status.
 
 ## How Checkpoints Work
 
@@ -116,7 +144,35 @@ There is also stale checkpoint recovery now. If a checkpoint has been stuck in `
 - it points back to `raw_events` with `raw_event_id`
 - it is where a more stable event model can grow over time
 
-Right now Stage 2 adds the schema for `normalized_events`, but the ingest pipeline still writes to `raw_events` first.
+The ingestion pipeline now writes to `raw_events` first and then writes category-aware rows to `normalized_events` for newly inserted raw rows.
+
+## Category System (Cyber + Crisis)
+
+Categories are first-class and deterministic:
+
+- conflict
+- protest
+- politics
+- diplomacy
+- economics
+- cyber
+- crisis
+
+`cyber` detection uses a mix of event-code signals and keyword signals like:
+
+- cyber attack
+- hacking
+- ransomware
+- breach
+
+`crisis` detection uses keyword rules and subcategories:
+
+- environmental
+- humanitarian
+- epidemic
+- natural_disaster
+
+Humanitarian event codes such as `023/024/025` are treated as weak signals only, not the entire crisis classifier by themselves.
 
 ## PostgreSQL Setup
 
@@ -129,6 +185,12 @@ DATABASE_URL=postgresql://username:password@localhost:5432/global_news_monitor
 ```
 
 If you prefer using a local `.env` file, `python-dotenv` is supported as an optional dependency.
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
 
 Apply the schema before your first ingestion run:
 

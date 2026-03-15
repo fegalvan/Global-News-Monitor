@@ -158,7 +158,7 @@ def reset_stale_processing_checkpoints(
             WHERE source = %s
               AND status = 'processing'
               AND processing_started_at IS NOT NULL
-              AND processing_started_at < NOW() - %s::interval
+              AND processing_started_at < NOW() - %s
             """,
             (source, stale_after),
         )
@@ -280,3 +280,123 @@ def bulk_insert_events(
             rows,
         )
         return cursor.rowcount if cursor.rowcount is not None else 0
+
+
+def insert_raw_and_normalized_batch(
+    connection: psycopg.Connection,
+    events: Sequence[dict[str, Any]],
+) -> tuple[int, int]:
+    """Insert raw events and their normalized rows in one batch workflow."""
+
+    if not events:
+        return (0, 0)
+
+    inserted_raw_count = 0
+    inserted_normalized_count = 0
+
+    with connection.cursor() as cursor:
+        for event in events:
+            cursor.execute(
+                """
+                INSERT INTO raw_events (
+                    source,
+                    export_time_utc,
+                    export_url,
+                    ingestion_run_id,
+                    dedupe_key,
+                    global_event_id,
+                    sql_date,
+                    event_time_utc,
+                    actor1_name,
+                    actor2_name,
+                    event_code,
+                    action_geo_full_name,
+                    action_geo_country_code,
+                    action_geo_lat,
+                    action_geo_long,
+                    avg_tone,
+                    raw_payload
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s::jsonb
+                )
+                ON CONFLICT (source, dedupe_key) DO NOTHING
+                RETURNING id
+                """,
+                (
+                    event["source"],
+                    event["export_time_utc"],
+                    event["export_url"],
+                    event["ingestion_run_id"],
+                    event["dedupe_key"],
+                    event.get("global_event_id"),
+                    event.get("sql_date"),
+                    event.get("event_time_utc"),
+                    event.get("actor1_name"),
+                    event.get("actor2_name"),
+                    event.get("event_code"),
+                    event.get("action_geo_full_name"),
+                    event.get("action_geo_country_code"),
+                    event.get("action_geo_lat"),
+                    event.get("action_geo_long"),
+                    event.get("avg_tone"),
+                    json.dumps(event["raw_payload"]),
+                ),
+            )
+            inserted_row = cursor.fetchone()
+            if inserted_row is None:
+                continue
+
+            inserted_raw_count += 1
+
+            raw_event_id = (
+                inserted_row["id"]
+                if isinstance(inserted_row, dict)
+                else inserted_row[0]
+            )
+
+            # if raw row was new, we persist the normalized version tied to that immutable raw row id
+            cursor.execute(
+                """
+                INSERT INTO normalized_events (
+                    raw_event_id,
+                    event_time_utc,
+                    actor1_name,
+                    actor2_name,
+                    event_code,
+                    country_code,
+                    latitude,
+                    longitude,
+                    goldstein_score,
+                    primary_category,
+                    secondary_category,
+                    category_confidence,
+                    category_reason,
+                    source
+                )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (raw_event_id) DO NOTHING
+                """,
+                (
+                    raw_event_id,
+                    event.get("event_time_utc"),
+                    event.get("actor1_name"),
+                    event.get("actor2_name"),
+                    event.get("event_code"),
+                    event.get("action_geo_country_code"),
+                    event.get("action_geo_lat"),
+                    event.get("action_geo_long"),
+                    event.get("goldstein_score"),
+                    event.get("primary_category"),
+                    event.get("secondary_category"),
+                    event.get("category_confidence"),
+                    event.get("category_reason"),
+                    event["source"],
+                ),
+            )
+            inserted_normalized_count += cursor.rowcount if cursor.rowcount is not None else 0
+
+    return (inserted_raw_count, inserted_normalized_count)
