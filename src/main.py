@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 import sys
-from uuid import uuid4
 
-from src.gdelt_events import fetch_export_rows, fetch_latest_events, get_latest_export_metadata
+from src.gdelt_events import fetch_latest_events
+from src.pipeline.ingest_service import ingest_latest_export
 
 EVENT_CODE_LABELS = {
     "020": "Appeal",
@@ -164,163 +165,17 @@ def print_event_line(event: dict[str, str]) -> None:
     )
 
 
-def run_ingest_command() -> int:
-    """Fetch the latest GDELT export and persist it into PostgreSQL."""
-
-    run_id = uuid4()
-
-    print(f"Starting ingestion run {run_id}...")
-
-    # Import the database layer only for the ingestion command so the original
-    # console monitor can still load without requiring PostgreSQL dependencies.
-    from src.db import get_connection, transaction
-    from src.ingestion.repository import (
-        bulk_insert_events,
-        claim_checkpoint,
-        insert_checkpoint,
-        insert_ingestion_run,
-        mark_checkpoint_completed,
-        mark_checkpoint_failed,
-        update_ingestion_run,
+def configure_logging() -> None:
+    # keeping the logs simple and readable for local runs
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    from src.ingestion.transform import SOURCE, normalize_event_for_insert
 
-    connection = get_connection()
-    run_record_created = False
-    checkpoint_source = SOURCE
-    export_time_utc = None
 
-    try:
-        with transaction(connection):
-            insert_ingestion_run(
-                connection=connection,
-                run_id=run_id,
-                trigger_mode="manual",
-                status="started",
-            )
-            run_record_created = True
-
-        print("Connected to PostgreSQL and created ingestion run record.")
-
-        export_metadata = get_latest_export_metadata()
-        export_time_utc = export_metadata["export_time_utc"]
-        export_url = export_metadata["export_url"]
-        export_filename = export_metadata["export_filename"]
-
-        with transaction(connection):
-            checkpoint = insert_checkpoint(
-                connection=connection,
-                source=checkpoint_source,
-                export_time_utc=export_time_utc,
-                export_url=export_url,
-                export_filename=export_filename,
-            )
-
-        print(f"Latest export: {export_filename}")
-
-        if checkpoint["status"] == "completed":
-            with transaction(connection):
-                update_ingestion_run(
-                    connection=connection,
-                    run_id=run_id,
-                    status="completed",
-                    exports_seen=1,
-                    exports_completed=0,
-                    events_inserted=0,
-                    events_duplicated=0,
-                    finished=True,
-                )
-            print("Latest export already completed. Nothing to do.")
-            return 0
-
-        with transaction(connection):
-            claimed_checkpoint = claim_checkpoint(
-                connection=connection,
-                source=checkpoint_source,
-                export_time_utc=export_time_utc,
-            )
-
-        if claimed_checkpoint is None:
-            with transaction(connection):
-                update_ingestion_run(
-                    connection=connection,
-                    run_id=run_id,
-                    status="completed",
-                    exports_seen=1,
-                    exports_completed=0,
-                    events_inserted=0,
-                    events_duplicated=0,
-                    finished=True,
-                )
-            print("Latest export is already being processed. Nothing to do.")
-            return 0
-
-        raw_events = fetch_export_rows(export_url)
-        normalized_events = [
-            normalize_event_for_insert(
-                event,
-                export_time_utc=export_time_utc,
-                export_url=export_url,
-                ingestion_run_id=run_id,
-            )
-            for event in raw_events
-        ]
-
-        raw_row_count = len(normalized_events)
-
-        with transaction(connection):
-            inserted_row_count = bulk_insert_events(
-                connection=connection,
-                events=normalized_events,
-            )
-            duplicate_row_count = raw_row_count - inserted_row_count
-
-            mark_checkpoint_completed(
-                connection=connection,
-                source=checkpoint_source,
-                export_time_utc=export_time_utc,
-                row_count_raw=raw_row_count,
-                row_count_inserted=inserted_row_count,
-                row_count_duplicates=duplicate_row_count,
-            )
-            update_ingestion_run(
-                connection=connection,
-                run_id=run_id,
-                status="completed",
-                exports_seen=1,
-                exports_completed=1,
-                events_inserted=inserted_row_count,
-                events_duplicated=duplicate_row_count,
-                finished=True,
-            )
-
-        print(
-            "Ingestion completed. "
-            f"Rows seen: {raw_row_count}, inserted: {inserted_row_count}, duplicates: {duplicate_row_count}."
-        )
-    except Exception:
-        if run_record_created:
-            error_message = str(sys.exc_info()[1]) or "Ingestion failed."
-            if export_time_utc is not None:
-                with transaction(connection):
-                    mark_checkpoint_failed(
-                        connection=connection,
-                        source=checkpoint_source,
-                        export_time_utc=export_time_utc,
-                        error_message=error_message,
-                    )
-            with transaction(connection):
-                update_ingestion_run(
-                    connection=connection,
-                    run_id=run_id,
-                    status="failed",
-                    error_summary=error_message,
-                    finished=True,
-                )
-        raise
-    finally:
-        connection.close()
-
+def run_ingest_command() -> int:
+    # this is just a thin cli wrapper now
+    ingest_latest_export()
     return 0
 
 
@@ -379,6 +234,7 @@ def run_console_monitor() -> int:
 
 
 def main() -> int:
+    configure_logging()
     command = sys.argv[1] if len(sys.argv) > 1 else "monitor"
 
     if command == "ingest":

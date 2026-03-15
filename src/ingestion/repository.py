@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -136,6 +136,33 @@ def claim_checkpoint(
             (source, export_time_utc),
         )
         return cursor.fetchone()
+
+
+def reset_stale_processing_checkpoints(
+    connection: psycopg.Connection,
+    source: str,
+    stale_after: timedelta,
+) -> int:
+    """Reset checkpoints stuck in processing beyond the stale threshold."""
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE gdelt_export_checkpoints
+            SET status = 'pending',
+                processing_started_at = NULL,
+                last_error = COALESCE(
+                    last_error,
+                    'Reset from processing to pending after stale timeout.'
+                )
+            WHERE source = %s
+              AND status = 'processing'
+              AND processing_started_at IS NOT NULL
+              AND processing_started_at < NOW() - %s::interval
+            """,
+            (source, stale_after),
+        )
+        return cursor.rowcount if cursor.rowcount is not None else 0
 
 
 def mark_checkpoint_completed(

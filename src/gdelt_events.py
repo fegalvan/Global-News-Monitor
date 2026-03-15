@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 import requests
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 # this file tells us where the newest gdelt data dump is
 LAST_UPDATE_URL = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
@@ -58,8 +59,17 @@ FIELD_INDEXES = {
     "AvgTone": 34,
 }
 
+RETRY_POLICY = dict(
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type((requests.exceptions.RequestException, ValueError)),
+    reraise=True,
+)
 
+
+@retry(**RETRY_POLICY)
 def _get_export_zip_url(session: requests.Session) -> str:
+    # retry because gdelt sometimes 429s or just has a weird moment
     # request the file that lists the newest gdelt update
     # this file updates every ~15 minutes and contains links to the latest datasets
     response = session.get(
@@ -108,12 +118,14 @@ def get_latest_export_metadata(
     return parse_export_metadata(export_url)
 
 
+@retry(**RETRY_POLICY)
 def download_export_zip(
     export_url: str,
     session: requests.Session | None = None,
 ) -> bytes:
     """Download a GDELT export zip into memory."""
 
+    # retry because gdelt sometimes 429s
     session = session or requests.Session()
     response = session.get(
         export_url,
@@ -130,6 +142,7 @@ def fetch_export_rows(
 ) -> list[dict[str, Any]]:
     """Download and parse a specific GDELT export URL."""
 
+    # im returning parsed rows here so the service layer doesnt care about zip details
     return _read_zip_csv_rows(download_export_zip(export_url, session=session))
 
 
