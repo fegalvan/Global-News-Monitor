@@ -1,0 +1,169 @@
+"""utilities for fetching the latest gdelt events 15-minute dataset."""
+
+from __future__ import annotations
+
+import tempfile
+import re
+from typing import Any, Iterator
+
+import requests
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+
+from src.connectors.gdelt.export_parser import (
+    read_zip_csv_rows,
+    iter_zip_csv_rows,
+    parse_export_metadata,
+)
+
+# this file tells us where the newest gdelt data dump is
+LAST_UPDATE_URL = "https://data.gdeltproject.org/gdeltv2/lastupdate.txt"
+LAST_UPDATE_URL_HTTP_FALLBACK = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
+DEFAULT_TIMEOUT = 60
+DOWNLOAD_CHUNK_BYTES = 1024 * 256
+SPOOL_MAX_MEMORY_BYTES = 1024 * 1024 * 8
+USER_AGENT = "Global-News-Monitor/1.0"
+CSV_URL_PATTERN = re.compile(r"https?://\S+?\.export\.CSV\.zip")
+
+_retry_metrics = {
+    "metadata_retries": 0,
+    "download_retries": 0,
+}
+
+
+def _on_metadata_retry(retry_state: Any) -> None:
+    _retry_metrics["metadata_retries"] += 1
+
+
+def _on_download_retry(retry_state: Any) -> None:
+    _retry_metrics["download_retries"] += 1
+
+
+def get_retry_metrics() -> dict[str, int]:
+    return dict(_retry_metrics)
+
+
+def reset_retry_metrics() -> None:
+    _retry_metrics["metadata_retries"] = 0
+    _retry_metrics["download_retries"] = 0
+
+
+@retry(
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type((requests.exceptions.RequestException, ValueError)),
+    before_sleep=_on_metadata_retry,
+    reraise=True,
+)
+def _get_export_zip_url(session: requests.Session) -> str:
+    # retry because gdelt sometimes 429s or just has a weird moment
+    try:
+        response = session.get(
+            LAST_UPDATE_URL,
+            headers={"User-Agent": USER_AGENT},
+            timeout=DEFAULT_TIMEOUT,
+        )
+    except requests.exceptions.SSLError:
+        # https is preferred, but we keep this fallback so ingest still works where cert validation breaks
+        response = session.get(
+            LAST_UPDATE_URL_HTTP_FALLBACK,
+            headers={"User-Agent": USER_AGENT},
+            timeout=DEFAULT_TIMEOUT,
+        )
+    response.raise_for_status()
+
+    match = CSV_URL_PATTERN.search(response.text)
+    if not match:
+        raise ValueError("could not find an export csv zip url in lastupdate.txt")
+
+    return match.group(0)
+
+
+def get_latest_export_metadata(
+    session: requests.Session | None = None,
+) -> dict[str, Any]:
+    session = session or requests.Session()
+    export_url = _get_export_zip_url(session)
+    return parse_export_metadata(export_url)
+
+
+@retry(
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type((requests.exceptions.RequestException, ValueError)),
+    before_sleep=_on_download_retry,
+    reraise=True,
+)
+def download_export_zip(
+    export_url: str,
+    session: requests.Session | None = None,
+) -> bytes:
+    # this helper is still used by a few compatibility paths
+    session = session or requests.Session()
+    response = session.get(
+        export_url,
+        headers={"User-Agent": USER_AGENT},
+        timeout=DEFAULT_TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.content
+
+
+@retry(
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    retry=retry_if_exception_type((requests.exceptions.RequestException, ValueError)),
+    before_sleep=_on_download_retry,
+    reraise=True,
+)
+def download_export_zip_to_spool(
+    export_url: str,
+    session: requests.Session | None = None,
+) -> tempfile.SpooledTemporaryFile[bytes]:
+    # this keeps giant exports from living as one huge bytes object in memory
+    session = session or requests.Session()
+    response = session.get(
+        export_url,
+        headers={"User-Agent": USER_AGENT},
+        timeout=DEFAULT_TIMEOUT,
+        stream=True,
+    )
+    response.raise_for_status()
+
+    spool = tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES)
+    try:
+        for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
+            if not chunk:
+                continue
+            spool.write(chunk)
+        spool.seek(0)
+        return spool
+    except Exception:
+        spool.close()
+        raise
+    finally:
+        # always close the underlying response body so sockets dont pile up
+        response.close()
+
+
+def fetch_export_rows(
+    export_url: str,
+    session: requests.Session | None = None,
+) -> list[dict[str, Any]]:
+    return read_zip_csv_rows(download_export_zip(export_url, session=session))
+
+
+def iter_export_rows(
+    export_url: str,
+    session: requests.Session | None = None,
+) -> Iterator[dict[str, Any]]:
+    spool = download_export_zip_to_spool(export_url, session=session)
+    try:
+        yield from iter_zip_csv_rows(spool)
+    finally:
+        spool.close()
+
+
+def fetch_latest_events() -> list[dict[str, Any]]:
+    session = requests.Session()
+    metadata = get_latest_export_metadata(session)
+    return fetch_export_rows(metadata["export_url"], session=session)

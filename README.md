@@ -59,8 +59,14 @@ This makes it much better for building a real-time event monitoring system.
 `src/main.py`
 Thin CLI wrapper for console monitoring and PostgreSQL-backed ingestion.
 
+`src/connectors/gdelt/export_client.py`
+Handles export discovery and streaming downloads with retry/backoff.
+
+`src/connectors/gdelt/export_parser.py`
+Parses zipped GDELT exports into event rows.
+
 `src/gdelt_events.py`
-Handles export discovery, retrying GDELT downloads, and parsing the CSV export.
+Compatibility wrapper for older imports (new code should use `src/connectors/gdelt`).
 
 `src/pipeline/ingest_service.py`
 Runs the ingestion workflow for the latest export or a specific export URL.
@@ -68,17 +74,29 @@ Runs the ingestion workflow for the latest export or a specific export URL.
 `src/domain/events/categorization.py`
 Contains deterministic category rules used by both ingestion and console monitoring.
 
+`src/pipeline/data_quality.py`
+Calculates ingestion data quality stats (missing actors/geo and category mix).
+
 `src/db.py`
 Creates PostgreSQL connections, loads `DATABASE_URL`, and provides transaction helpers.
 
 `src/ingestion/repository.py`
 Contains repository functions for ingestion runs, export checkpoints, and raw event inserts.
 
+`src/legacy/gdelt_api.py`
+Deprecated DOC API client kept for reference.
+
 `sql/stage1_schema.sql`
 PostgreSQL DDL for the ingestion tables required by the current pipeline.
 
 `sql/stage2_schema.sql`
 PostgreSQL DDL for the future normalized event layer.
+
+`sql/stage3_indexes.sql`
+Additional analytics-focused composite indexes for query performance.
+
+`migrations/`
+Alembic migration scripts (`0001` stage1 schema, `0002` stage2 schema, `0003` stage3 indexes).
 
 `tests/`
 Contains unit tests for the project.
@@ -88,8 +106,8 @@ Contains unit tests for the project.
 The ingestion flow is now split into layers so it can scale a little better:
 
 1. `src/main.py` handles CLI commands.
-2. `src/pipeline/ingest_service.py` runs the orchestration.
-3. `src/gdelt_events.py` talks to GDELT and parses the export.
+2. `src/pipeline/ingest_service.py` runs orchestration and metrics.
+3. `src/connectors/gdelt/` talks to GDELT and parses exports.
 4. `src/ingestion/transform.py` normalizes raw rows for insert.
 5. `src/domain/events/categorization.py` assigns first-class categories and confidence.
 6. `src/ingestion/repository.py` writes checkpoints and events to PostgreSQL.
@@ -99,7 +117,7 @@ That means the CLI stays thin while the actual ingest logic can be reused later 
 ```mermaid
 flowchart LR
     A["python -m src.main ingest"] --> B["src/pipeline/ingest_service.py"]
-    B --> C["src/gdelt_events.py (download + parse)"]
+    B --> C["src/connectors/gdelt (download + parse)"]
     C --> D["src/ingestion/transform.py"]
     D --> E["src/domain/events/categorization.py"]
     E --> F["src/ingestion/repository.py"]
@@ -115,9 +133,10 @@ The ingestion service processes rows in chunks instead of loading one giant in-m
 2. Claim checkpoint (or skip if already completed).
 3. Stream rows from the export ZIP.
 4. Normalize each row and categorize it.
-5. Insert into `raw_events` (immutable landing table).
-6. For rows that were newly inserted, insert into `normalized_events`.
+5. Bulk insert into `raw_events` in configurable batches (`INGEST_BATCH_SIZE`, default `500`).
+6. Bulk insert normalized rows for newly inserted raw rows.
 7. Update checkpoint metrics and ingestion run status.
+8. Emit ingest metrics + data quality summary logs.
 
 ## How Checkpoints Work
 
@@ -129,6 +148,34 @@ Each GDELT export gets a checkpoint row in `gdelt_export_checkpoints`.
 - `failed` means the export hit an error and can be retried later.
 
 There is also stale checkpoint recovery now. If a checkpoint has been stuck in `processing` for more than 30 minutes, the ingestion service resets it back to `pending` before continuing.
+
+## Bulk Insert Strategy
+
+The repository now uses two-stage bulk inserts:
+
+1. Bulk insert `raw_events` with `ON CONFLICT (source, dedupe_key) DO NOTHING`.
+2. Capture inserted raw IDs with `RETURNING`.
+3. Bulk insert `normalized_events` rows tied to those raw IDs.
+
+This keeps dedupe guarantees intact while significantly reducing per-row SQL overhead.
+
+## Ingestion Metrics + Data Quality
+
+Ingestion logs now include throughput and reliability signals:
+
+- total events processed
+- rows inserted
+- events/sec
+- retry counts
+- export lag to latest timestamp
+
+Data quality summary logs include:
+
+- missing actor percentage
+- missing geo percentage
+- category distribution
+
+Warnings are emitted when missing actor/geo percentages cross thresholds.
 
 ## Raw Vs Normalized Events
 
@@ -192,16 +239,20 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Apply the schema before your first ingestion run:
+Run migrations (recommended):
+
+```bash
+python -m src.main migrate
+```
+
+Migration files are managed via Alembic under `migrations/versions/`.
+
+Manual schema option:
 
 ```bash
 psql "$DATABASE_URL" -f sql/stage1_schema.sql
-```
-
-If you also want the future normalized table ready:
-
-```bash
 psql "$DATABASE_URL" -f sql/stage2_schema.sql
+psql "$DATABASE_URL" -f sql/stage3_indexes.sql
 ```
 
 ## Running the Project

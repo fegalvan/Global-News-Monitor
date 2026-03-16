@@ -1,6 +1,8 @@
 -- Stage 2 database schema for Global News Monitor.
 -- im keeping raw events so we dont lose data later, and this table is the cleaner layer on top.
 
+CREATE EXTENSION IF NOT EXISTS postgis;
+
 CREATE TABLE IF NOT EXISTS normalized_events (
     event_id BIGSERIAL PRIMARY KEY,
     raw_event_id BIGINT NOT NULL REFERENCES raw_events(id),
@@ -11,6 +13,10 @@ CREATE TABLE IF NOT EXISTS normalized_events (
     country_code TEXT NULL,
     latitude NUMERIC(9, 6) NULL,
     longitude NUMERIC(9, 6) NULL,
+    location_point GEOGRAPHY(Point,4326)
+    GENERATED ALWAYS AS (
+        ST_SetSRID(ST_MakePoint(longitude, latitude),4326)
+    ) STORED,
     goldstein_score NUMERIC(8, 3) NULL,
     primary_category TEXT NOT NULL,
     secondary_category TEXT NULL,
@@ -45,6 +51,14 @@ CREATE TABLE IF NOT EXISTS normalized_events (
     CONSTRAINT chk_normalized_events_longitude_range
         CHECK (longitude IS NULL OR (longitude >= -180 AND longitude <= 180))
 );
+
+-- this backfills the column for databases where normalized_events already existed
+-- without location_point because CREATE TABLE IF NOT EXISTS skipped redefinition
+ALTER TABLE normalized_events
+ADD COLUMN IF NOT EXISTS location_point GEOGRAPHY(Point,4326)
+GENERATED ALWAYS AS (
+    ST_SetSRID(ST_MakePoint(longitude, latitude),4326)
+) STORED;
 
 CREATE INDEX IF NOT EXISTS idx_normalized_events_event_time_utc
     ON normalized_events (event_time_utc);

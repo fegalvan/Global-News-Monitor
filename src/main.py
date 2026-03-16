@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import logging
 import sys
+from pathlib import Path
 
 from src.domain.events.categorization import categorize_event
-from src.gdelt_events import fetch_latest_events
+from src.connectors.gdelt import fetch_latest_events
 from src.pipeline.ingest_service import ingest_latest_export
 
 EVENT_CODE_LABELS = {
@@ -151,6 +152,20 @@ def run_ingest_command() -> int:
     return 0
 
 
+def run_migrations() -> int:
+    # this keeps migration workflow simple for local development
+    try:
+        from alembic import command
+        from alembic.config import Config
+    except ImportError as exc:  # pragma: no cover - dependency issue
+        raise RuntimeError("Alembic is required for migrations. Install requirements.txt first.") from exc
+
+    config_path = Path(__file__).resolve().parents[1] / "alembic.ini"
+    config = Config(str(config_path))
+    command.upgrade(config, "head")
+    return 0
+
+
 def run_console_monitor() -> int:
     print("Global News Monitor starting...")
 
@@ -211,6 +226,8 @@ def main() -> int:
 
     if command == "ingest":
         return run_ingest_command()
+    if command == "migrate":
+        return run_migrations()
 
     return run_console_monitor()
 

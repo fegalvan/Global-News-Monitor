@@ -285,19 +285,51 @@ def bulk_insert_events(
 def insert_raw_and_normalized_batch(
     connection: psycopg.Connection,
     events: Sequence[dict[str, Any]],
+    batch_size: int = 500,
 ) -> tuple[int, int]:
-    """Insert raw events and their normalized rows in one batch workflow."""
+    """Insert raw events and normalized rows in bulk batches."""
 
     if not events:
         return (0, 0)
 
     inserted_raw_count = 0
     inserted_normalized_count = 0
+    batch_size = max(int(batch_size), 1)
 
     with connection.cursor() as cursor:
-        for event in events:
-            cursor.execute(
-                """
+        for start in range(0, len(events), batch_size):
+            chunk = events[start : start + batch_size]
+
+            raw_placeholders = []
+            raw_params: list[Any] = []
+            for event in chunk:
+                raw_placeholders.append(
+                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)"
+                )
+                raw_params.extend(
+                    [
+                        event["source"],
+                        event["export_time_utc"],
+                        event["export_url"],
+                        event["ingestion_run_id"],
+                        event["dedupe_key"],
+                        event.get("global_event_id"),
+                        event.get("sql_date"),
+                        event.get("event_time_utc"),
+                        event.get("actor1_name"),
+                        event.get("actor2_name"),
+                        event.get("event_code"),
+                        event.get("action_geo_full_name"),
+                        event.get("action_geo_country_code"),
+                        event.get("action_geo_lat"),
+                        event.get("action_geo_long"),
+                        event.get("avg_tone"),
+                        json.dumps(event["raw_payload"]),
+                    ]
+                )
+
+            # bulk insert raw rows and return identifiers for only the newly inserted rows
+            raw_insert_query = f"""
                 INSERT INTO raw_events (
                     source,
                     export_time_utc,
@@ -317,48 +349,55 @@ def insert_raw_and_normalized_batch(
                     avg_tone,
                     raw_payload
                 )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s::jsonb
-                )
+                VALUES {", ".join(raw_placeholders)}
                 ON CONFLICT (source, dedupe_key) DO NOTHING
-                RETURNING id
-                """,
-                (
-                    event["source"],
-                    event["export_time_utc"],
-                    event["export_url"],
-                    event["ingestion_run_id"],
-                    event["dedupe_key"],
-                    event.get("global_event_id"),
-                    event.get("sql_date"),
-                    event.get("event_time_utc"),
-                    event.get("actor1_name"),
-                    event.get("actor2_name"),
-                    event.get("event_code"),
-                    event.get("action_geo_full_name"),
-                    event.get("action_geo_country_code"),
-                    event.get("action_geo_lat"),
-                    event.get("action_geo_long"),
-                    event.get("avg_tone"),
-                    json.dumps(event["raw_payload"]),
-                ),
-            )
-            inserted_row = cursor.fetchone()
-            if inserted_row is None:
+                RETURNING id, source, dedupe_key
+            """
+            cursor.execute(raw_insert_query, raw_params)
+            inserted_rows = list(cursor.fetchall())
+            inserted_raw_count += len(inserted_rows)
+
+            if not inserted_rows:
                 continue
 
-            inserted_raw_count += 1
+            dedupe_to_raw_id = {
+                (row["source"], row["dedupe_key"]): row["id"]
+                for row in inserted_rows
+            }
 
-            raw_event_id = (
-                inserted_row["id"]
-                if isinstance(inserted_row, dict)
-                else inserted_row[0]
-            )
+            normalized_placeholders = []
+            normalized_params: list[Any] = []
+            for event in chunk:
+                raw_event_id = dedupe_to_raw_id.get((event["source"], event["dedupe_key"]))
+                if raw_event_id is None:
+                    continue
 
-            # if raw row was new, we persist the normalized version tied to that immutable raw row id
-            cursor.execute(
-                """
+                normalized_placeholders.append(
+                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                )
+                normalized_params.extend(
+                    [
+                        raw_event_id,
+                        event.get("event_time_utc"),
+                        event.get("actor1_name"),
+                        event.get("actor2_name"),
+                        event.get("event_code"),
+                        event.get("action_geo_country_code"),
+                        event.get("action_geo_lat"),
+                        event.get("action_geo_long"),
+                        event.get("goldstein_score"),
+                        event.get("primary_category"),
+                        event.get("secondary_category"),
+                        event.get("category_confidence"),
+                        event.get("category_reason"),
+                        event["source"],
+                    ]
+                )
+
+            if not normalized_placeholders:
+                continue
+
+            normalized_insert_query = f"""
                 INSERT INTO normalized_events (
                     raw_event_id,
                     event_time_utc,
@@ -375,28 +414,10 @@ def insert_raw_and_normalized_batch(
                     category_reason,
                     source
                 )
-                VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                )
+                VALUES {", ".join(normalized_placeholders)}
                 ON CONFLICT (raw_event_id) DO NOTHING
-                """,
-                (
-                    raw_event_id,
-                    event.get("event_time_utc"),
-                    event.get("actor1_name"),
-                    event.get("actor2_name"),
-                    event.get("event_code"),
-                    event.get("action_geo_country_code"),
-                    event.get("action_geo_lat"),
-                    event.get("action_geo_long"),
-                    event.get("goldstein_score"),
-                    event.get("primary_category"),
-                    event.get("secondary_category"),
-                    event.get("category_confidence"),
-                    event.get("category_reason"),
-                    event["source"],
-                ),
-            )
+            """
+            cursor.execute(normalized_insert_query, normalized_params)
             inserted_normalized_count += cursor.rowcount if cursor.rowcount is not None else 0
 
     return (inserted_raw_count, inserted_normalized_count)

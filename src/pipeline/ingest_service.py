@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import logging
+import os
+import time
 from datetime import timedelta
 from itertools import islice
 from typing import Iterable, Iterator
 from uuid import uuid4
 
+from src.connectors.gdelt import (
+    get_latest_export_metadata,
+    get_retry_metrics,
+    iter_export_rows,
+    parse_export_metadata,
+    reset_retry_metrics,
+)
 from src.db import get_connection, transaction
-from src.gdelt_events import get_latest_export_metadata, iter_export_rows, parse_export_metadata
+from src.pipeline.data_quality import summarize_batch_quality
 from src.ingestion.repository import (
     claim_checkpoint,
     insert_ingestion_run,
@@ -22,7 +31,7 @@ from src.ingestion.transform import SOURCE, normalize_event_for_insert
 
 logger = logging.getLogger(__name__)
 STALE_CHECKPOINT_AFTER = timedelta(minutes=30)
-BATCH_SIZE = 1000
+BATCH_SIZE = int(os.getenv("INGEST_BATCH_SIZE", "500"))
 
 
 def _iter_chunks(rows: Iterable[dict[str, object]], chunk_size: int) -> Iterator[list[dict[str, object]]]:
@@ -56,6 +65,8 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
     checkpoint_source = SOURCE
     export_time_utc = export_metadata["export_time_utc"]
     export_filename = export_metadata["export_filename"]
+    ingest_started_monotonic = time.perf_counter()
+    reset_retry_metrics()
 
     try:
         with transaction(connection):
@@ -167,6 +178,9 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
         raw_row_count = 0
         inserted_row_count = 0
         inserted_normalized_count = 0
+        missing_actor_count = 0
+        missing_geo_count = 0
+        category_counts: dict[str, int] = {}
 
         # this is where we stream the gdelt export rows and process them in chunks
         export_rows = iter_export_rows(export_url)
@@ -181,6 +195,11 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
                 )
                 for event in chunk
             ]
+            quality = summarize_batch_quality(normalized_events)
+            missing_actor_count += quality["missing_actor_count"]
+            missing_geo_count += quality["missing_geo_count"]
+            for category, category_count in quality["category_counts"].items():
+                category_counts[category] = category_counts.get(category, 0) + category_count
             logger.info(
                 "rows_parsed source=%s export_filename=%s chunk_size=%s rows_seen_total=%s",
                 checkpoint_source,
@@ -193,6 +212,7 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
                 inserted_raw_chunk, inserted_normalized_chunk = insert_raw_and_normalized_batch(
                     connection=connection,
                     events=normalized_events,
+                    batch_size=BATCH_SIZE,
                 )
 
             inserted_row_count += inserted_raw_chunk
@@ -243,6 +263,36 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             checkpoint_source,
             export_filename,
         )
+        retry_metrics = get_retry_metrics()
+        elapsed_seconds = max(time.perf_counter() - ingest_started_monotonic, 0.001)
+        rate = raw_row_count / elapsed_seconds
+        export_lag_seconds = max(int((time.time() - export_time_utc.timestamp())), 0)
+        missing_actor_percent = (missing_actor_count / raw_row_count * 100) if raw_row_count else 0.0
+        missing_geo_percent = (missing_geo_count / raw_row_count * 100) if raw_row_count else 0.0
+        logger.info(
+            "[INGEST METRICS] events_processed=%s rows_inserted=%s rate=%.2f events/sec retries=%s export_lag_seconds=%s",
+            raw_row_count,
+            inserted_row_count,
+            rate,
+            retry_metrics["metadata_retries"] + retry_metrics["download_retries"],
+            export_lag_seconds,
+        )
+        logger.info(
+            "[DATA QUALITY] missing_actor_percent=%.2f missing_geo_percent=%.2f category_distribution=%s",
+            missing_actor_percent,
+            missing_geo_percent,
+            category_counts,
+        )
+        if missing_actor_percent > 35:
+            logger.warning(
+                "data_quality_warning reason=high_missing_actor_percent value=%.2f threshold=35",
+                missing_actor_percent,
+            )
+        if missing_geo_percent > 45:
+            logger.warning(
+                "data_quality_warning reason=high_missing_geo_percent value=%.2f threshold=45",
+                missing_geo_percent,
+            )
 
         return {
             "run_id": str(run_id),

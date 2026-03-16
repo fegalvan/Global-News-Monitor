@@ -17,6 +17,7 @@ class FakeCursor:
         self.executed = []
         self.rowcount = 0
         self._last_fetchone = None
+        self._last_fetchall = []
 
     def __enter__(self):
         return self
@@ -29,14 +30,22 @@ class FakeCursor:
         normalized_query = " ".join(query.split())
 
         if "INSERT INTO raw_events" in normalized_query:
-            result = self.raw_insert_results.pop(0) if self.raw_insert_results else None
-            self._last_fetchone = result
-            self.rowcount = 1 if result is not None else 0
+            returned_rows = []
+            while self.raw_insert_results:
+                result = self.raw_insert_results.pop(0)
+                if result is None:
+                    continue
+                result = dict(result)
+                result.setdefault("source", "gdelt_events_v2")
+                result.setdefault("dedupe_key", "")
+                returned_rows.append(result)
+            self._last_fetchall = returned_rows
+            self.rowcount = len(returned_rows)
             return
 
         if "INSERT INTO normalized_events" in normalized_query:
             self._last_fetchone = None
-            self.rowcount = 1
+            self.rowcount = len(params) // 14 if params else 0
             return
 
         if "SELECT * FROM gdelt_export_checkpoints" in normalized_query:
@@ -52,6 +61,9 @@ class FakeCursor:
 
     def fetchone(self):
         return self._last_fetchone
+
+    def fetchall(self):
+        return list(self._last_fetchall)
 
 
 class FakeConnection:
@@ -90,7 +102,13 @@ def _build_event(dedupe_key: str) -> dict:
 
 
 def test_insert_raw_and_normalized_batch_skips_duplicates():
-    fake_cursor = FakeCursor(raw_insert_results=[{"id": 10}, None, {"id": 11}])
+    fake_cursor = FakeCursor(
+        raw_insert_results=[
+            {"id": 10, "source": "gdelt_events_v2", "dedupe_key": "one"},
+            None,
+            {"id": 11, "source": "gdelt_events_v2", "dedupe_key": "three"},
+        ]
+    )
     connection = FakeConnection(fake_cursor)
     events = [_build_event("one"), _build_event("two"), _build_event("three")]
 
@@ -102,7 +120,7 @@ def test_insert_raw_and_normalized_batch_skips_duplicates():
     normalized_insert_count = sum(
         1 for query, _ in fake_cursor.executed if "INSERT INTO normalized_events" in query
     )
-    assert normalized_insert_count == 2
+    assert normalized_insert_count == 1
 
 
 def test_insert_checkpoint_query_is_idempotent():
