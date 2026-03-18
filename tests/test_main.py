@@ -26,7 +26,7 @@ def test_print_event_line_uses_action_geo_country_code(capsys):
     captured = capsys.readouterr()
     assert (
         captured.out.strip()
-        == "POLICE → PROTESTERS | Violent protest (145) | Paris | FRA | 48.86, 2.35"
+        == "POLICE \u2192 PROTESTERS | Violent protest (145) | Paris | FRA | 48.86, 2.35"
     )
 
 
@@ -48,5 +48,24 @@ def test_print_event_line_falls_back_to_unknown_location(capsys):
     captured = capsys.readouterr()
     assert (
         captured.out.strip()
-        == "POLICE → PROTESTERS | Violent protest (145) | Unknown | Unknown | Unknown, Unknown"
+        == "POLICE \u2192 PROTESTERS | Violent protest (145) | Unknown | Unknown | Unknown, Unknown"
     )
+
+
+def test_translation_tier_classifies_codes():
+    from src.main import _translation_tier
+
+    assert _translation_tier("190") == "exact"
+    assert _translation_tier("194") == "root"
+    assert _translation_tier("999") == "unknown"
+    assert _translation_tier("") == "unknown"
+
+
+def test_build_arg_parser_parses_latest_limit():
+    from src.main import build_arg_parser
+
+    parser = build_arg_parser()
+    args = parser.parse_args(["latest", "--limit", "7"])
+
+    assert args.command == "latest"
+    assert args.limit == 7

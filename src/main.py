@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
+from datetime import timezone
 from pathlib import Path
 
 from src.domain.events.categorization import categorize_event
 from src.connectors.gdelt import fetch_latest_events
+from src.db import get_connection
+from src.ingestion.repository import (
+    fetch_event_stats,
+    fetch_recent_ingestion_runs,
+    fetch_recent_normalized_events,
+)
 from src.pipeline.ingest_service import ingest_latest_export
 
 EVENT_CODE_LABELS = {
@@ -166,6 +174,159 @@ def run_migrations() -> int:
     return 0
 
 
+def _translation_tier(event_code: str | None) -> str:
+    if not event_code:
+        return "unknown"
+
+    cleaned = event_code.strip()
+    if not cleaned:
+        return "unknown"
+
+    if cleaned in EVENT_CODE_LABELS:
+        return "exact"
+
+    if cleaned[:2] in ROOT_EVENT_LABELS:
+        return "root"
+
+    return "unknown"
+
+
+def _format_utc(timestamp: object) -> str:
+    if timestamp is None:
+        return "Unknown"
+    if hasattr(timestamp, "astimezone"):
+        return timestamp.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    return str(timestamp)
+
+
+def _format_percent(count: int, total: int) -> str:
+    if total <= 0:
+        return "0.00%"
+    return f"{(count / total) * 100:.2f}%"
+
+
+def run_latest_command(limit: int) -> int:
+    with get_connection() as connection:
+        rows = fetch_recent_normalized_events(connection, limit=limit)
+
+    print(f"Latest normalized events (limit={max(int(limit), 1)})")
+    if not rows:
+        print("No rows found in normalized_events.")
+        return 0
+
+    for row in rows:
+        event_code = row.get("event_code")
+        event_label = get_event_label(event_code or "")
+        secondary = row.get("secondary_category")
+        if secondary:
+            category = f"{row.get('primary_category')}:{secondary}"
+        else:
+            category = row.get("primary_category")
+        print(
+            f"{_format_utc(row.get('event_time_utc'))} | "
+            f"{row.get('actor1_name') or 'Unknown'} -> {row.get('actor2_name') or 'Unknown'} | "
+            f"{event_label} ({event_code or 'Unknown'}) | "
+            f"{row.get('country_code') or 'Unknown'} | "
+            f"cat={category or 'Unknown'} conf={row.get('category_confidence')} "
+            f"tone={row.get('goldstein_score')}"
+        )
+
+    return 0
+
+
+def run_runs_command(limit: int) -> int:
+    with get_connection() as connection:
+        rows = fetch_recent_ingestion_runs(connection, limit=limit)
+
+    print(f"Recent ingestion runs (limit={max(int(limit), 1)})")
+    if not rows:
+        print("No ingestion runs found.")
+        return 0
+
+    for row in rows:
+        error_summary = row.get("error_summary")
+        error_suffix = f" | error={error_summary}" if error_summary else ""
+        print(
+            f"{row.get('id')} | status={row.get('status')} trigger={row.get('trigger_mode')} | "
+            f"started={_format_utc(row.get('started_at'))} finished={_format_utc(row.get('finished_at'))} | "
+            f"exports={row.get('exports_completed')}/{row.get('exports_seen')} "
+            f"inserted={row.get('events_inserted')} dup={row.get('events_duplicated')}"
+            f"{error_suffix}"
+        )
+
+    return 0
+
+
+def run_stats_command(hours: int) -> int:
+    with get_connection() as connection:
+        stats = fetch_event_stats(connection, hours=hours)
+
+    overview = stats["overview"]
+    total_events = int(overview.get("total_events") or 0)
+    missing_actor_count = int(overview.get("missing_actor_count") or 0)
+    missing_geo_count = int(overview.get("missing_geo_count") or 0)
+    fallback_unknown_category_count = int(overview.get("fallback_unknown_category_count") or 0)
+
+    exact_count = 0
+    root_count = 0
+    unknown_code_count = 0
+    for event_code_row in stats["event_code_counts"]:
+        event_code = event_code_row.get("event_code")
+        count = int(event_code_row.get("count") or 0)
+        tier = _translation_tier(event_code)
+        if tier == "exact":
+            exact_count += count
+        elif tier == "root":
+            root_count += count
+        else:
+            unknown_code_count += count
+
+    print(f"Event stats for last {stats['hours']} hour(s)")
+    print(f"total_events={total_events}")
+    print(
+        f"missing_actor={missing_actor_count} ({_format_percent(missing_actor_count, total_events)}) "
+        f"missing_geo={missing_geo_count} ({_format_percent(missing_geo_count, total_events)})"
+    )
+    print(
+        "translation_coverage "
+        f"exact={exact_count} ({_format_percent(exact_count, total_events)}) "
+        f"root={root_count} ({_format_percent(root_count, total_events)}) "
+        f"unknown={unknown_code_count} ({_format_percent(unknown_code_count, total_events)}) "
+        f"category_fallback_unknown={fallback_unknown_category_count} "
+        f"({_format_percent(fallback_unknown_category_count, total_events)})"
+    )
+
+    print("top_categories:")
+    for row in stats["category_counts"]:
+        print(f"- {row.get('primary_category')}: {row.get('count')}")
+
+    print("top_countries:")
+    for row in stats["top_countries"]:
+        print(f"- {row.get('country_code') or 'Unknown'}: {row.get('count')}")
+
+    return 0
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Global News Monitor CLI")
+    subparsers = parser.add_subparsers(dest="command")
+
+    subparsers.add_parser("monitor", help="Fetch latest export and print categorized events")
+    subparsers.add_parser("ingest", help="Ingest latest export into PostgreSQL")
+    subparsers.add_parser("migrate", help="Apply Alembic migrations")
+
+    latest_parser = subparsers.add_parser("latest", help="Show latest normalized events from DB")
+    latest_parser.add_argument("--limit", type=int, default=20)
+
+    runs_parser = subparsers.add_parser("runs", help="Show recent ingestion runs")
+    runs_parser.add_argument("--limit", type=int, default=10)
+
+    stats_parser = subparsers.add_parser("stats", help="Show quality and translation stats")
+    stats_parser.add_argument("--hours", type=int, default=24)
+
+    return parser
+
+
 def run_console_monitor() -> int:
     print("Global News Monitor starting...")
 
@@ -222,8 +383,15 @@ def run_console_monitor() -> int:
 
 def main() -> int:
     configure_logging()
-    command = sys.argv[1] if len(sys.argv) > 1 else "monitor"
+    args = build_arg_parser().parse_args(sys.argv[1:])
+    command = args.command or "monitor"
 
+    if command == "latest":
+        return run_latest_command(limit=args.limit)
+    if command == "runs":
+        return run_runs_command(limit=args.limit)
+    if command == "stats":
+        return run_stats_command(hours=args.hours)
     if command == "ingest":
         return run_ingest_command()
     if command == "migrate":

@@ -7,10 +7,19 @@ from pathlib import Path
 from alembic import context
 from sqlalchemy import create_engine, pool
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional dependency
+    load_dotenv = None
+
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+if load_dotenv is not None:
+    project_root = Path(__file__).resolve().parents[1]
+    load_dotenv(project_root / ".env")
 
 database_url = os.getenv("DATABASE_URL")
 if database_url:
@@ -49,4 +58,3 @@ if context.is_offline_mode():
     run_migrations_offline()
 else:
     run_migrations_online()
-

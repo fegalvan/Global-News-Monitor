@@ -421,3 +421,157 @@ def insert_raw_and_normalized_batch(
             inserted_normalized_count += cursor.rowcount if cursor.rowcount is not None else 0
 
     return (inserted_raw_count, inserted_normalized_count)
+
+
+def fetch_recent_normalized_events(
+    connection: psycopg.Connection,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Fetch the most recent normalized events for CLI inspection."""
+
+    safe_limit = max(int(limit), 1)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                event_time_utc,
+                actor1_name,
+                actor2_name,
+                event_code,
+                country_code,
+                latitude,
+                longitude,
+                primary_category,
+                secondary_category,
+                category_confidence,
+                goldstein_score
+            FROM normalized_events
+            ORDER BY event_time_utc DESC NULLS LAST, event_id DESC
+            LIMIT %s
+            """,
+            (safe_limit,),
+        )
+        return list(cursor.fetchall())
+
+
+def fetch_recent_ingestion_runs(
+    connection: psycopg.Connection,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    """Fetch the latest ingestion run records for CLI inspection."""
+
+    safe_limit = max(int(limit), 1)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                started_at,
+                finished_at,
+                status,
+                trigger_mode,
+                exports_seen,
+                exports_completed,
+                events_inserted,
+                events_duplicated,
+                error_summary
+            FROM ingestion_runs
+            ORDER BY started_at DESC
+            LIMIT %s
+            """,
+            (safe_limit,),
+        )
+        return list(cursor.fetchall())
+
+
+def fetch_event_stats(
+    connection: psycopg.Connection,
+    hours: int = 24,
+) -> dict[str, Any]:
+    """Fetch aggregate event stats for a recent time window."""
+
+    safe_hours = max(int(hours), 1)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            WITH windowed AS (
+                SELECT *
+                FROM normalized_events
+                WHERE event_time_utc >= NOW() - make_interval(hours => %s)
+            )
+            SELECT
+                COUNT(*) AS total_events,
+                SUM(
+                    CASE
+                        WHEN (COALESCE(TRIM(actor1_name), '') = '')
+                         AND (COALESCE(TRIM(actor2_name), '') = '')
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS missing_actor_count,
+                SUM(
+                    CASE
+                        WHEN (COALESCE(TRIM(country_code), '') = '')
+                         AND latitude IS NULL
+                         AND longitude IS NULL
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS missing_geo_count,
+                SUM(
+                    CASE
+                        WHEN category_reason = 'fallback_unknown_event_code'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS fallback_unknown_category_count
+            FROM windowed
+            """,
+            (safe_hours,),
+        )
+        overview = cursor.fetchone() or {}
+
+        cursor.execute(
+            """
+            SELECT primary_category, COUNT(*) AS count
+            FROM normalized_events
+            WHERE event_time_utc >= NOW() - make_interval(hours => %s)
+            GROUP BY primary_category
+            ORDER BY count DESC, primary_category ASC
+            """,
+            (safe_hours,),
+        )
+        category_counts = list(cursor.fetchall())
+
+        cursor.execute(
+            """
+            SELECT country_code, COUNT(*) AS count
+            FROM normalized_events
+            WHERE event_time_utc >= NOW() - make_interval(hours => %s)
+            GROUP BY country_code
+            ORDER BY count DESC NULLS LAST, country_code ASC NULLS LAST
+            LIMIT 10
+            """,
+            (safe_hours,),
+        )
+        top_countries = list(cursor.fetchall())
+
+        cursor.execute(
+            """
+            SELECT event_code, COUNT(*) AS count
+            FROM normalized_events
+            WHERE event_time_utc >= NOW() - make_interval(hours => %s)
+            GROUP BY event_code
+            ORDER BY count DESC NULLS LAST, event_code ASC NULLS LAST
+            """,
+            (safe_hours,),
+        )
+        event_code_counts = list(cursor.fetchall())
+
+    return {
+        "hours": safe_hours,
+        "overview": overview,
+        "category_counts": category_counts,
+        "top_countries": top_countries,
+        "event_code_counts": event_code_counts,
+    }
