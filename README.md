@@ -1,237 +1,168 @@
 # Global News Monitor
 
-Global News Monitor is a Python project for monitoring global events from GDELT. The project started as a console-based fetch-and-print tool and is now being refactored into a small ingestion pipeline with PostgreSQL as the source of truth.
+Global News Monitor is a Python project for pulling structured world event data from GDELT, classifying it into a small set of first-class categories, and storing it in PostgreSQL for inspection and analysis.
 
-GDELT, the Global Database of Events, Language and Tone, is a large open dataset that extracts structured events from worldwide news coverage. It tracks actors, locations, event types, and sentiment across reporting from many countries and languages, and it updates continuously.
+The repo currently supports two main workflows:
 
-The current codebase still supports console summaries, and Stage 2 now connects the ingestion command to the latest GDELT 15-minute event export with PostgreSQL-backed checkpointing and deduplication.
+- a live console monitor that fetches the latest event feed and prints a human-readable summary
+- a database-backed ingestion pipeline that checkpoints GDELT exports, deduplicates events, and writes both raw and normalized records for later querying
 
-## Features
+## What The Project Does Today
 
-- Fetch latest GDELT event dataset
-- Extract key event fields
-- Convert event codes into readable labels for console output
-- Persist ingestion runs and raw events in PostgreSQL
-- Track export checkpoints for future incremental ingestion
-- Retry GDELT export discovery and downloads with backoff
-- Reset stale checkpoints that got stuck in processing
+- fetches the latest GDELT Event export
+- parses zipped GDELT rows into Python dictionaries
+- normalizes events into a consistent insert shape
+- assigns deterministic categories such as `diplomacy`, `politics`, `conflict`, `economics`, `protest`, `cyber`, and `crisis`
+- stores ingestion runs and export checkpoints in PostgreSQL
+- writes raw landing rows and normalized analytical rows
+- deduplicates events by deterministic key
+- exposes CLI commands for ingesting, migrating, and inspecting recent data quality
 
-## Example Output
+## Why GDELT Event Exports
 
-```text
-Global News Monitor starting...
+This project uses the GDELT Event export files instead of the DOC API.
 
-[EVENT] UNITED KINGDOM → PRESIDENT | Diplomatic consultation (043) | 2
-[EVENT] PRESIDENT → UNITED STATES | Diplomatic consultation (043) | 1
-```
+Why:
 
-## Why the Event Dataset Instead of the DOC API
+- the event exports are structured event data, not just article search results
+- they update every 15 minutes
+- they are a much better fit for repeated ingestion and checkpointing
+- they are more reliable for this use case than keyword-based DOC API requests
 
-Originally I attempted to use the GDELT DOC API for this project.
+## Current Architecture
 
-However, the DOC API is designed for searching news articles by keywords and tends to return article-level results rather than structured event data.
+The codebase is organized into a few clear layers:
 
-It also frequently returned HTTP 429 rate-limit errors during development.
-
-The project switched to the official GDELT Event export dataset instead.
-
-Advantages of the Event dataset:
-
-- Updates every 15 minutes
-- Contains structured event records
-- Includes actor names, event codes, countries, and coordinates
-- More stable for continuous monitoring
-- Doesnt give me an error 35% of the time haha
-
-This makes it much better for building a real-time event monitoring system.
-
-## Tech Stack
-
-- Python
-- Requests
-- Tenacity
-- PostgreSQL
-- Psycopg
-- GDELT Event dataset
-
-## Project Structure
-
-`src/main.py`
-Thin CLI wrapper for console monitoring and PostgreSQL-backed ingestion.
-
-`src/connectors/gdelt/export_client.py`
-Handles export discovery and streaming downloads with retry/backoff.
-
-`src/connectors/gdelt/export_parser.py`
-Parses zipped GDELT exports into event rows.
-
-`src/gdelt_events.py`
-Compatibility wrapper for older imports (new code should use `src/connectors/gdelt`).
-
-`src/pipeline/ingest_service.py`
-Runs the ingestion workflow for the latest export or a specific export URL.
-
-`src/domain/events/categorization.py`
-Contains deterministic category rules used by both ingestion and console monitoring.
-
-`src/pipeline/data_quality.py`
-Calculates ingestion data quality stats (missing actors/geo and category mix).
-
-`src/db.py`
-Creates PostgreSQL connections, loads `DATABASE_URL`, and provides transaction helpers.
-
-`src/ingestion/repository.py`
-Contains repository functions for ingestion runs, export checkpoints, and raw event inserts.
-
-`src/legacy/gdelt_api.py`
-Deprecated DOC API client kept for reference.
-
-`sql/stage1_schema.sql`
-PostgreSQL DDL for the ingestion tables required by the current pipeline.
-
-`sql/stage2_schema.sql`
-PostgreSQL DDL for the future normalized event layer.
-
-`sql/stage3_indexes.sql`
-Additional analytics-focused composite indexes for query performance.
-
-`migrations/`
-Alembic migration scripts (`0001` stage1 schema, `0002` stage2 schema, `0003` stage3 indexes).
-
-`tests/`
-Contains unit tests for the project.
-
-## Ingestion Architecture
-
-The ingestion flow is now split into layers so it can scale a little better:
-
-1. `src/main.py` handles CLI commands.
-2. `src/pipeline/ingest_service.py` runs orchestration and metrics.
-3. `src/connectors/gdelt/` talks to GDELT and parses exports.
-4. `src/ingestion/transform.py` normalizes raw rows for insert.
-5. `src/domain/events/categorization.py` assigns first-class categories and confidence.
-6. `src/ingestion/repository.py` writes checkpoints and events to PostgreSQL.
-
-That means the CLI stays thin while the actual ingest logic can be reused later by schedulers, jobs, or an API.
+1. `src/main.py` provides the CLI commands.
+2. `src/connectors/gdelt/` discovers and parses GDELT export files.
+3. `src/ingestion/transform.py` normalizes parsed rows and builds dedupe keys.
+4. `src/domain/events/categorization.py` applies deterministic category rules.
+5. `src/ingestion/repository.py` handles inserts, checkpoint state, and query helpers.
+6. `src/pipeline/ingest_service.py` orchestrates the full ingestion flow.
 
 ```mermaid
 flowchart LR
-    A["python -m src.main ingest"] --> B["src/pipeline/ingest_service.py"]
-    B --> C["src/connectors/gdelt (download + parse)"]
-    C --> D["src/ingestion/transform.py"]
-    D --> E["src/domain/events/categorization.py"]
-    E --> F["src/ingestion/repository.py"]
+    A["python -m src.main ingest"] --> B["ingest_service"]
+    B --> C["GDELT export discovery + download"]
+    C --> D["row parsing"]
+    D --> E["normalization + dedupe key"]
+    E --> F["category rules"]
     F --> G["raw_events"]
     F --> H["normalized_events"]
+    G --> I["stats / latest / runs"]
+    H --> I
 ```
 
-## Ingestion Flow
+## Data Model
 
-The ingestion service processes rows in chunks instead of loading one giant in-memory list.
+The PostgreSQL side is split into operational and analytical tables.
 
-1. Discover latest export URL from GDELT.
-2. Claim checkpoint (or skip if already completed).
-3. Stream rows from the export ZIP.
-4. Normalize each row and categorize it.
-5. Bulk insert into `raw_events` in configurable batches (`INGEST_BATCH_SIZE`, default `500`).
-6. Bulk insert normalized rows for newly inserted raw rows.
-7. Update checkpoint metrics and ingestion run status.
-8. Emit ingest metrics + data quality summary logs.
+### Operational tables
 
-## How Checkpoints Work
+- `ingestion_runs`: audit trail for each ingestion attempt
+- `gdelt_export_checkpoints`: export-level checkpoint tracking with statuses like `pending`, `processing`, `completed`, and `failed`
 
-Each GDELT export gets a checkpoint row in `gdelt_export_checkpoints`.
+### Event tables
 
-- `pending` means we discovered the export but have not started processing it yet.
-- `processing` means a worker claimed it and is currently ingesting it.
-- `completed` means the export was fully processed.
-- `failed` means the export hit an error and can be retried later.
+- `raw_events`: landing table that preserves the original parsed payload and core fields
+- `normalized_events`: cleaner analytical table with category, score, and query-friendly columns
 
-There is also stale checkpoint recovery now. If a checkpoint has been stuck in `processing` for more than 30 minutes, the ingestion service resets it back to `pending` before continuing.
+The ingestion pipeline writes to `raw_events` first, then inserts linked rows into `normalized_events` for newly inserted raw records.
 
-## Bulk Insert Strategy
+## Categorization Model
 
-The repository now uses two-stage bulk inserts:
+The project uses deterministic category rules instead of an LLM or ML model.
 
-1. Bulk insert `raw_events` with `ON CONFLICT (source, dedupe_key) DO NOTHING`.
-2. Capture inserted raw IDs with `RETURNING`.
-3. Bulk insert `normalized_events` rows tied to those raw IDs.
+Top-level categories:
 
-This keeps dedupe guarantees intact while significantly reducing per-row SQL overhead.
+- `diplomacy`
+- `politics`
+- `conflict`
+- `economics`
+- `protest`
+- `cyber`
+- `crisis`
 
-## Ingestion Metrics + Data Quality
+How it works:
 
-Ingestion logs now include throughput and reliability signals:
+- most events map from the 2-digit GDELT root event code
+- `cyber` can override root mapping when strong event codes or cyber keywords are detected
+- `crisis` can override root mapping when crisis keywords are detected
+- crisis subcategories currently include `environmental`, `humanitarian`, `epidemic`, and `natural_disaster`
+- if an event code is truly unknown, the classifier still returns a safe fallback category so downstream code never gets a null category
 
-- total events processed
-- rows inserted
-- events/sec
-- retry counts
-- export lag to latest timestamp
+## CLI Commands
 
-Data quality summary logs include:
+### Live console monitor
 
-- missing actor percentage
-- missing geo percentage
-- category distribution
-
-Warnings are emitted when missing actor/geo percentages cross thresholds.
-
-## Raw Vs Normalized Events
-
-`raw_events` is the landing table.
-
-- it stores the original parsed fields
-- it keeps `raw_payload` so we can always go back to the original row
-- it is the safest place to preserve data while the schema is still evolving
-
-`normalized_events` is the next layer.
-
-- it is meant for cleaner backend and analytics queries
-- it points back to `raw_events` with `raw_event_id`
-- it is where a more stable event model can grow over time
-
-The ingestion pipeline now writes to `raw_events` first and then writes category-aware rows to `normalized_events` for newly inserted raw rows.
-
-## Category System (Cyber + Crisis)
-
-Categories are first-class and deterministic:
-
-- conflict
-- protest
-- politics
-- diplomacy
-- economics
-- cyber
-- crisis
-
-`cyber` detection uses a mix of event-code signals and keyword signals like:
-
-- cyber attack
-- hacking
-- ransomware
-- breach
-
-`crisis` detection uses keyword rules and subcategories:
-
-- environmental
-- humanitarian
-- epidemic
-- natural_disaster
-
-Humanitarian event codes such as `023/024/025` are treated as weak signals only, not the entire crisis classifier by themselves.
-
-## PostgreSQL Setup
-
-PostgreSQL is required for `python -m src.main ingest`.
-
-Set the `DATABASE_URL` environment variable before running ingestion:
+Fetch the latest feed and print grouped events:
 
 ```bash
-DATABASE_URL=postgresql://username:password@localhost:5432/global_news_monitor
+python -m src.main
 ```
 
-If you prefer using a local `.env` file, `python-dotenv` is supported as an optional dependency.
+This is the original monitor mode. It is useful for quick eyeballing of what is happening in the latest GDELT slice.
+
+### Ingest latest export
+
+Download the latest GDELT export and write it to PostgreSQL:
+
+```bash
+python -m src.main ingest
+```
+
+This command:
+
+1. discovers the latest export
+2. creates an ingestion run
+3. claims or skips the export checkpoint
+4. parses rows in chunks
+5. normalizes and categorizes rows
+6. bulk inserts raw and normalized records
+7. updates checkpoint and run metrics
+
+### Run migrations
+
+Apply all Alembic migrations:
+
+```bash
+python -m src.main migrate
+```
+
+### Inspect latest normalized rows
+
+```bash
+python -m src.main latest --limit 20
+```
+
+### Inspect recent ingestion runs
+
+```bash
+python -m src.main runs --limit 10
+```
+
+### Inspect recent aggregate stats
+
+```bash
+python -m src.main stats --hours 24
+```
+
+The `stats` command summarizes:
+
+- total events in the time window
+- missing actor percentage
+- missing geo percentage
+- translation coverage by exact vs root event mapping
+- fallback category usage
+- top categories
+- top countries
+
+## Local Setup
+
+### Requirements
+
+- Python 3.12+
+- PostgreSQL
 
 Install dependencies:
 
@@ -239,15 +170,37 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Run migrations (recommended):
+### Environment Configuration
+
+Create a repo-root `.env` file:
+
+```env
+DATABASE_URL=postgresql://username:password@localhost:5432/global_news_monitor
+```
+
+Notes:
+
+- `ingest` reads `DATABASE_URL` from `.env`
+- `migrate` also reads the same `.env`
+- the Postgres integration tests now read the same `.env` too
+
+That means reopening VS Code should not require re-exporting `DATABASE_URL` every time, as long as you run commands from the repository root.
+
+### Database Setup
+
+Run migrations before the first ingest:
 
 ```bash
 python -m src.main migrate
 ```
 
-Migration files are managed via Alembic under `migrations/versions/`.
+Then ingest:
 
-Manual schema option:
+```bash
+python -m src.main ingest
+```
+
+Manual SQL fallback:
 
 ```bash
 psql "$DATABASE_URL" -f sql/stage1_schema.sql
@@ -255,35 +208,80 @@ psql "$DATABASE_URL" -f sql/stage2_schema.sql
 psql "$DATABASE_URL" -f sql/stage3_indexes.sql
 ```
 
-## Running the Project
+## How Ingestion Works
 
-Run the original console monitor. This remains the default behavior:
+The ingestion service is designed to be rerunnable and safe for repeated polling.
 
-```bash
-python -m src.main
-```
+Key behaviors:
 
-Run ingestion for the latest GDELT event export. This requires `DATABASE_URL` and the schema to already be applied:
+- export checkpointing prevents the same GDELT export from being processed repeatedly
+- stale `processing` checkpoints can be reset if they were abandoned
+- events are deduplicated using a deterministic key
+- raw and normalized inserts happen in bulk batches for speed
+- the pipeline records inserted vs duplicated counts for each run
 
-```bash
-python -m src.main ingest
-```
+If `GLOBALEVENTID` exists, it is used for the dedupe key. Otherwise the pipeline falls back to a hash built from normalized event fields.
 
-The ingest command still works the same, but now it goes through the service layer in `src/pipeline/ingest_service.py`.
+## Repository Layout
 
-## Running Tests
+`src/main.py`
+CLI entrypoint for monitor, ingest, migrate, latest, runs, and stats commands.
+
+`src/db.py`
+Database connection helpers and `.env`-aware `DATABASE_URL` loading.
+
+`src/connectors/gdelt/export_client.py`
+Discovers the latest export and downloads it with retry behavior.
+
+`src/connectors/gdelt/export_parser.py`
+Streams and parses GDELT export rows from ZIP files.
+
+`src/ingestion/transform.py`
+Normalizes raw rows, parses types, builds dedupe keys, and attaches category output.
+
+`src/ingestion/repository.py`
+Owns checkpoint persistence, ingestion run updates, bulk inserts, and stats queries.
+
+`src/pipeline/ingest_service.py`
+Main orchestration layer for ingestion, batching, metrics, and checkpoint flow.
+
+`src/pipeline/data_quality.py`
+Computes batch-level quality metrics during ingest.
+
+`src/domain/events/categorization.py`
+Deterministic category logic for root-code, cyber, and crisis classification.
+
+`migrations/versions/`
+Alembic migrations for stage 1 schema, stage 2 normalized schema, and stage 3 indexes.
+
+`sql/`
+Raw SQL versions of the schema and index stages.
+
+`tests/`
+Unit and integration coverage for categorization, transforms, repository logic, and CLI behavior.
+
+## Testing
+
+Run all tests:
 
 ```bash
 pytest
 ```
 
-## Architecture Direction
+Notes:
 
-The current ingestion stage focuses on:
+- unit tests run without Postgres
+- integration tests use the database from `.env` unless `TEST_DATABASE_URL` is set
 
-- fetching the latest GDELT 15-minute event export
-- persistent ingestion metadata
-- export-level checkpoint tracking
-- raw event storage with database-enforced deduplication
+## Current State
 
-Later stages can build clustering, scoring, APIs, and dashboards on top of this stored event history.
+The project is no longer just a print-to-console experiment. It already has:
+
+- a working GDELT export connector
+- PostgreSQL-backed ingestion state
+- export checkpointing
+- raw plus normalized event storage
+- deterministic categorization
+- CLI inspection commands for recent stored data
+
+The next natural steps would be things like richer analytics, dashboards, alerting, better geo cleanup, and friendlier country-code presentation, but the current repo is already a usable ingestion and monitoring foundation.
