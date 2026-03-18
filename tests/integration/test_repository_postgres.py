@@ -9,6 +9,11 @@ import os
 import psycopg
 import pytest
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - optional dependency
+    load_dotenv = None
+
 from src.ingestion.repository import (
     claim_checkpoint,
     insert_checkpoint,
@@ -25,12 +30,15 @@ def _load_sql(path: Path) -> str:
 
 @pytest.fixture(scope="session")
 def pg_connection():
+    root = Path(__file__).resolve().parents[2]
+    if load_dotenv is not None:
+        load_dotenv(root / ".env")
+
     database_url = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL")
     if not database_url:
         pytest.skip("Set TEST_DATABASE_URL or DATABASE_URL for Postgres integration tests.")
 
     connection = psycopg.connect(database_url, row_factory=psycopg.rows.dict_row)
-    root = Path(__file__).resolve().parents[2]
 
     with connection.transaction():
         # we apply schemas directly so integration tests validate real repository SQL
