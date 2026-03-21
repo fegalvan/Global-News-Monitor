@@ -28,6 +28,7 @@ from src.ingestion.repository import (
     update_ingestion_run,
 )
 from src.ingestion.transform import SOURCE, normalize_event_for_insert
+from src.ingestion.validation import validate_and_clean_event
 
 logger = logging.getLogger(__name__)
 STALE_CHECKPOINT_AFTER = timedelta(minutes=30)
@@ -178,6 +179,7 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
         raw_row_count = 0
         inserted_row_count = 0
         inserted_normalized_count = 0
+        dropped_row_count = 0
         missing_actor_count = 0
         missing_geo_count = 0
         category_counts: dict[str, int] = {}
@@ -186,15 +188,20 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
         export_rows = iter_export_rows(export_url)
         for chunk in _iter_chunks(export_rows, BATCH_SIZE):
             raw_row_count += len(chunk)
-            normalized_events = [
-                normalize_event_for_insert(
+            normalized_events = []
+            for event in chunk:
+                normalized_event = normalize_event_for_insert(
                     event,
                     export_time_utc=export_time_utc,
                     export_url=export_url,
                     ingestion_run_id=run_id,
                 )
-                for event in chunk
-            ]
+                cleaned_event, _, drop = validate_and_clean_event(normalized_event, export_time_utc)
+                if drop:
+                    dropped_row_count += 1
+                    continue
+                normalized_events.append(cleaned_event)
+
             quality = summarize_batch_quality(normalized_events)
             missing_actor_count += quality["missing_actor_count"]
             missing_geo_count += quality["missing_geo_count"]
@@ -218,7 +225,7 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             inserted_row_count += inserted_raw_chunk
             inserted_normalized_count += inserted_normalized_chunk
 
-        duplicate_row_count = raw_row_count - inserted_row_count
+        duplicate_row_count = max(raw_row_count - inserted_row_count - dropped_row_count, 0)
 
         with transaction(connection):
             mark_checkpoint_completed(
@@ -257,6 +264,12 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             checkpoint_source,
             export_filename,
             duplicate_row_count,
+        )
+        logger.info(
+            "rows_dropped source=%s export_filename=%s row_count=%s",
+            checkpoint_source,
+            export_filename,
+            dropped_row_count,
         )
         logger.info(
             "checkpoint_status_changed source=%s export_filename=%s new_status=completed",

@@ -97,6 +97,126 @@ ROOT_EVENT_LABELS = {
 MAX_EVENTS_PER_CATEGORY = 3
 MAX_BREAKING_EVENTS = 5
 
+SPIKES_SQL = """
+WITH events AS (
+    SELECT
+        event_time_utc AS event_time,
+        primary_category AS category,
+        country_code AS country,
+        goldstein_score AS tone,
+        actor1_name AS actor1,
+        actor2_name AS actor2
+    FROM normalized_events
+),
+recent AS (
+    SELECT
+        category,
+        country,
+        COUNT(*) AS recent_count
+    FROM events
+    WHERE event_time >= NOW() - make_interval(hours => %s)
+    GROUP BY 1, 2
+),
+baseline_daily AS (
+    SELECT
+        category,
+        country,
+        date_trunc('day', event_time) AS day_bucket,
+        COUNT(*) AS daily_count
+    FROM events
+    WHERE event_time >= NOW() - INTERVAL '15 days'
+      AND event_time < NOW() - make_interval(hours => %s)
+    GROUP BY 1, 2, 3
+),
+baseline_stats AS (
+    SELECT
+        category,
+        country,
+        AVG(daily_count) AS baseline_avg,
+        STDDEV_POP(daily_count) AS baseline_std
+    FROM baseline_daily
+    GROUP BY 1, 2
+)
+SELECT
+    r.category,
+    r.country,
+    r.recent_count,
+    b.baseline_avg,
+    ROUND(
+        (r.recent_count - b.baseline_avg) / NULLIF(b.baseline_std, 0),
+        2
+    ) AS z_score,
+    ROUND(r.recent_count / NULLIF(b.baseline_avg, 0), 2) AS lift_ratio
+FROM recent r
+JOIN baseline_stats b
+    ON r.category = b.category
+   AND r.country = b.country
+WHERE r.recent_count >= 10
+ORDER BY z_score DESC NULLS LAST, lift_ratio DESC
+LIMIT 50
+"""
+
+TENSION_SQL = """
+WITH events AS (
+    SELECT
+        event_time_utc AS event_time,
+        primary_category AS category,
+        country_code AS country,
+        goldstein_score AS tone,
+        actor1_name AS actor1,
+        actor2_name AS actor2
+    FROM normalized_events
+)
+SELECT
+    COALESCE(actor1, 'Unknown') AS actor1,
+    COALESCE(actor2, 'Unknown') AS actor2,
+    category,
+    COUNT(*) AS event_count,
+    ROUND(AVG(tone)::numeric, 2) AS avg_tone,
+    MIN(tone) AS worst_tone
+FROM events
+WHERE event_time >= NOW() - make_interval(hours => %s)
+  AND tone IS NOT NULL
+  AND tone <= -5
+GROUP BY 1, 2, 3
+HAVING COUNT(*) >= 3
+ORDER BY avg_tone ASC, event_count DESC
+LIMIT 50
+"""
+
+MOMENTUM_SQL = """
+WITH events AS (
+    SELECT
+        event_time_utc AS event_time,
+        primary_category AS category
+    FROM normalized_events
+),
+short_window AS (
+    SELECT
+        category,
+        COUNT(*) AS c_3h
+    FROM events
+    WHERE event_time >= NOW() - INTERVAL '3 hours'
+    GROUP BY 1
+),
+long_window AS (
+    SELECT
+        category,
+        COUNT(*) / 8.0 AS c_24h_hourly_avg
+    FROM events
+    WHERE event_time >= NOW() - INTERVAL '24 hours'
+    GROUP BY 1
+)
+SELECT
+    s.category,
+    s.c_3h,
+    l.c_24h_hourly_avg,
+    ROUND((s.c_3h / 3.0) / NULLIF(l.c_24h_hourly_avg, 0), 2) AS momentum_ratio
+FROM short_window s
+JOIN long_window l USING (category)
+ORDER BY momentum_ratio DESC NULLS LAST, s.c_3h DESC
+"""
+
 
 def get_event_category(event_code: str) -> str:
     # keeping this helper for backwards compatibility with console monitor code
@@ -307,6 +427,69 @@ def run_stats_command(hours: int) -> int:
     return 0
 
 
+def run_spikes_command(hours: int) -> int:
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(SPIKES_SQL, (max(int(hours), 1), max(int(hours), 1)))
+            rows = list(cursor.fetchall())
+
+    print(f"Spikes (recent window={max(int(hours), 1)} hour(s))")
+    if not rows:
+        print("No spike rows found.")
+        return 0
+
+    for row in rows:
+        print(
+            f"{row.get('category') or 'unknown'} | "
+            f"{row.get('country') or 'Unknown'} | "
+            f"recent={row.get('recent_count')} baseline={row.get('baseline_avg')} "
+            f"z={row.get('z_score')} lift={row.get('lift_ratio')}"
+        )
+    return 0
+
+
+def run_tension_command(hours: int) -> int:
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(TENSION_SQL, (max(int(hours), 1),))
+            rows = list(cursor.fetchall())
+
+    print(f"High-tension events (window={max(int(hours), 1)} hour(s))")
+    if not rows:
+        print("No high-tension rows found.")
+        return 0
+
+    for row in rows:
+        print(
+            f"{row.get('actor1')} -> {row.get('actor2')} | "
+            f"{row.get('category') or 'unknown'} | "
+            f"count={row.get('event_count')} avg_tone={row.get('avg_tone')} "
+            f"worst_tone={row.get('worst_tone')}"
+        )
+    return 0
+
+
+def run_momentum_command() -> int:
+    with get_connection() as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(MOMENTUM_SQL)
+            rows = list(cursor.fetchall())
+
+    print("Category momentum")
+    if not rows:
+        print("No momentum rows found.")
+        return 0
+
+    for row in rows:
+        print(
+            f"{row.get('category') or 'unknown'} | "
+            f"last_3h={row.get('c_3h')} "
+            f"hourly_avg_24h={row.get('c_24h_hourly_avg')} "
+            f"momentum={row.get('momentum_ratio')}"
+        )
+    return 0
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Global News Monitor CLI")
     subparsers = parser.add_subparsers(dest="command")
@@ -323,6 +506,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     stats_parser = subparsers.add_parser("stats", help="Show quality and translation stats")
     stats_parser.add_argument("--hours", type=int, default=24)
+
+    spikes_parser = subparsers.add_parser("spikes", help="Show category-country spike candidates")
+    spikes_parser.add_argument("--hours", type=int, default=24)
+
+    tension_parser = subparsers.add_parser("tension", help="Show high-tension actor interactions")
+    tension_parser.add_argument("--hours", type=int, default=48)
+
+    subparsers.add_parser("momentum", help="Show category momentum ratios")
 
     return parser
 
@@ -392,6 +583,12 @@ def main() -> int:
         return run_runs_command(limit=args.limit)
     if command == "stats":
         return run_stats_command(hours=args.hours)
+    if command == "spikes":
+        return run_spikes_command(hours=args.hours)
+    if command == "tension":
+        return run_tension_command(hours=args.hours)
+    if command == "momentum":
+        return run_momentum_command()
     if command == "ingest":
         return run_ingest_command()
     if command == "migrate":
