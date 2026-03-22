@@ -5,15 +5,16 @@ import io
 import tempfile
 import zipfile
 from datetime import datetime, timezone
-from typing import Any, Iterator
-from urllib.parse import urlparse
 from pathlib import PurePosixPath
 import re
+from typing import Any, Iterator
+from urllib.parse import urlparse
 
 # fields we actually care about from the giant gdelt dataset
 FIELDS_TO_KEEP = (
     "GLOBALEVENTID",
     "SQLDATE",
+    "DATEADDED",
     "Actor1Name",
     "Actor2Name",
     "EventCode",
@@ -29,6 +30,7 @@ FIELDS_TO_KEEP = (
 FIELD_INDEXES = {
     "GLOBALEVENTID": 0,
     "SQLDATE": 1,
+    "DATEADDED": 59,
     "Actor1Name": 6,
     "Actor2Name": 16,
     "EventCode": 26,
@@ -88,4 +90,3 @@ def iter_zip_csv_rows(
                     continue
 
                 yield event
-

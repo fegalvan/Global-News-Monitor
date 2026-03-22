@@ -52,6 +52,7 @@ def test_normalize_event_for_insert_maps_expected_fields():
             "ActionGeo_Long": "-77.0369",
             "AvgTone": "-2.5",
             "GoldsteinScale": "-5.0",
+            "DATEADDED": "20260313001500",
             "SOURCEURL": "https://example.com/cyber-attack-report",
         },
         export_time_utc=datetime(2026, 3, 13, 0, 15, tzinfo=timezone.utc),
@@ -66,6 +67,21 @@ def test_normalize_event_for_insert_maps_expected_fields():
     assert normalized["avg_tone"] == Decimal("-2.5")
     assert normalized["goldstein_score"] == Decimal("-5.0")
     assert normalized["source_url"] == "https://example.com/cyber-attack-report"
-    assert normalized["event_time_utc"].isoformat() == "2026-03-13T00:00:00+00:00"
+    assert normalized["event_time_utc"].isoformat() == "2026-03-13T00:15:00+00:00"
     assert normalized["primary_category"] == "cyber"
     assert normalized["category_confidence"] > Decimal("0.8")
+
+
+def test_normalize_event_for_insert_falls_back_to_sql_date_when_dateadded_invalid():
+    normalized = normalize_event_for_insert(
+        {
+            "SQLDATE": "20260313",
+            "DATEADDED": "not-a-timestamp",
+            "EventCode": "190",
+        },
+        export_time_utc=datetime(2026, 3, 13, 4, 30, tzinfo=timezone.utc),
+        export_url="http://data.gdeltproject.org/gdeltv2/20260313043000.export.CSV.zip",
+        ingestion_run_id=uuid4(),
+    )
+
+    assert normalized["event_time_utc"].isoformat() == "2026-03-13T00:00:00+00:00"

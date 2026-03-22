@@ -26,7 +26,7 @@ def test_print_event_line_uses_action_geo_country_code(capsys):
     captured = capsys.readouterr()
     assert (
         captured.out.strip()
-        == "POLICE \u2192 PROTESTERS | Violent protest (145) | Paris | FRA | 48.86, 2.35"
+        == "POLICE -> PROTESTERS | Violent protest (145) | Paris | FRA | 48.86, 2.35"
     )
 
 
@@ -48,7 +48,7 @@ def test_print_event_line_falls_back_to_unknown_location(capsys):
     captured = capsys.readouterr()
     assert (
         captured.out.strip()
-        == "POLICE \u2192 PROTESTERS | Violent protest (145) | Unknown | Unknown | Unknown, Unknown"
+        == "POLICE -> PROTESTERS | Violent protest (145) | Unknown | Unknown | Unknown, Unknown"
     )
 
 

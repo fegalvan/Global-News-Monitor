@@ -38,6 +38,13 @@ def _clean_actor(value: Any) -> str | None:
     return text
 
 
+def _first_not_none(*values: Any) -> Any:
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
 def _normalize_country_code(value: Any) -> str | None:
     if value is None:
         return None
@@ -90,8 +97,8 @@ def validate_and_clean_event(
     ):
         flags.append("bad_country_code")
 
-    lat = _to_decimal(event.get("latitude") or event.get("action_geo_lat"))
-    lon = _to_decimal(event.get("longitude") or event.get("action_geo_long"))
+    lat = _to_decimal(_first_not_none(event.get("latitude"), event.get("action_geo_lat")))
+    lon = _to_decimal(_first_not_none(event.get("longitude"), event.get("action_geo_long")))
     if (lat is None) ^ (lon is None):
         lat = None
         lon = None
@@ -102,7 +109,7 @@ def validate_and_clean_event(
             lon = None
             flags.append("invalid_geo_range")
 
-    tone = _to_decimal(event.get("tone") or event.get("avg_tone"))
+    tone = _to_decimal(_first_not_none(event.get("tone"), event.get("avg_tone")))
     if tone is None:
         flags.append("missing_tone")
     else:
@@ -123,8 +130,8 @@ def validate_and_clean_event(
             "action_geo_lat": lat,
             "action_geo_long": lon,
             "avg_tone": tone,
-            "actor1_name": _clean_actor(event.get("actor1") or event.get("actor1_name")),
-            "actor2_name": _clean_actor(event.get("actor2") or event.get("actor2_name")),
+            "actor1_name": _clean_actor(_first_not_none(event.get("actor1"), event.get("actor1_name"))),
+            "actor2_name": _clean_actor(_first_not_none(event.get("actor2"), event.get("actor2_name"))),
             "quality_flags": flags,
         }
     )

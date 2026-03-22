@@ -53,45 +53,47 @@ def fetch_articles(query: str = "conflict", max_records: int = 50) -> dict[str, 
         "Accept": "application/json",
     }
     session = requests.Session()
+    try:
+        for attempt in range(MAX_RETRIES + 1):
+            _rate_limit()
+            try:
+                response = session.get(
+                    BASE_URL,
+                    params=params,
+                    headers=headers,
+                    timeout=DEFAULT_TIMEOUT,
+                )
+                if response.status_code in RETRYABLE_STATUS_CODES:
+                    if attempt == MAX_RETRIES:
+                        response.raise_for_status()
 
-    for attempt in range(MAX_RETRIES + 1):
-        _rate_limit()
-        try:
-            response = session.get(
-                BASE_URL,
-                params=params,
-                headers=headers,
-                timeout=DEFAULT_TIMEOUT,
-            )
-            if response.status_code in RETRYABLE_STATUS_CODES:
+                    delay = _get_retry_delay(response, attempt)
+                    logger.warning(
+                        "GDELT request returned %s. Retrying in %.1f seconds (attempt %s/%s).",
+                        response.status_code,
+                        delay,
+                        attempt + 1,
+                        MAX_RETRIES,
+                    )
+                    time.sleep(delay)
+                    continue
+
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException as exc:
                 if attempt == MAX_RETRIES:
-                    response.raise_for_status()
+                    raise
 
-                delay = _get_retry_delay(response, attempt)
+                delay = _get_retry_delay(None, attempt)
                 logger.warning(
-                    "GDELT request returned %s. Retrying in %.1f seconds (attempt %s/%s).",
-                    response.status_code,
+                    "GDELT request failed with %s. Retrying in %.1f seconds (attempt %s/%s).",
+                    exc.__class__.__name__,
                     delay,
                     attempt + 1,
                     MAX_RETRIES,
                 )
                 time.sleep(delay)
-                continue
-
-            response.raise_for_status()
-            return response.json()
-        except requests.exceptions.RequestException as exc:
-            if attempt == MAX_RETRIES:
-                raise
-
-            delay = _get_retry_delay(None, attempt)
-            logger.warning(
-                "GDELT request failed with %s. Retrying in %.1f seconds (attempt %s/%s).",
-                exc.__class__.__name__,
-                delay,
-                attempt + 1,
-                MAX_RETRIES,
-            )
-            time.sleep(delay)
+    finally:
+        session.close()
 
     raise RuntimeError("Failed to fetch articles from GDELT after exhausting retries.")

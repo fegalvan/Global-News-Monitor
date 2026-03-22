@@ -60,9 +60,9 @@ def ingest_latest_export() -> dict[str, int | str]:
 def ingest_export(export_url: str) -> dict[str, int | str]:
     # im keeping the orchestration here so the cli stays super thin
     run_id = uuid4()
+    export_metadata = parse_export_metadata(export_url)
     connection = get_connection()
     run_record_created = False
-    export_metadata = parse_export_metadata(export_url)
     checkpoint_source = SOURCE
     export_time_utc = export_metadata["export_time_utc"]
     export_filename = export_metadata["export_filename"]

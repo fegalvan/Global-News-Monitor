@@ -45,6 +45,17 @@ def _parse_sql_date(value: Any) -> date | None:
         return None
 
 
+def _parse_date_added(value: Any) -> datetime | None:
+    text = _clean_text(value)
+    if text is None:
+        return None
+
+    try:
+        return datetime.strptime(text, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def _parse_decimal(value: Any) -> Decimal | None:
     text = _clean_text(value)
     if text is None:
@@ -99,12 +110,13 @@ def normalize_event_for_insert(
     """Map a parsed GDELT row to the raw_events table shape."""
 
     sql_date = _parse_sql_date(event.get("SQLDATE"))
-    # gdelt event export has date but not always exact time, so midnight UTC is a practical fallback
-    event_time_utc = (
-        datetime.combine(sql_date, time.min, tzinfo=timezone.utc)
-        if sql_date is not None
-        else export_time_utc
-    )
+    date_added_utc = _parse_date_added(event.get("DATEADDED"))
+    # prefer DATEADDED when available, then SQLDATE-at-midnight, then export discovery time
+    event_time_utc = date_added_utc
+    if event_time_utc is None and sql_date is not None:
+        event_time_utc = datetime.combine(sql_date, time.min, tzinfo=timezone.utc)
+    if event_time_utc is None:
+        event_time_utc = export_time_utc
     source_url = _clean_text(event.get("SOURCEURL"))
     category_result = categorize_event(
         {

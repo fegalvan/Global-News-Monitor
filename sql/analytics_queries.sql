@@ -1,5 +1,11 @@
 -- Query A: hourly trends with 24-hour moving average
-WITH hourly AS (
+WITH events AS (
+    SELECT
+        event_time_utc AS event_time,
+        primary_category AS category
+    FROM normalized_events
+),
+hourly AS (
     SELECT
         date_trunc('hour', event_time) AS hour_bucket,
         category,
@@ -21,7 +27,14 @@ FROM hourly
 ORDER BY hour_bucket, category;
 
 -- Query B: spike detection using baseline and z-score
-WITH recent AS (
+WITH events AS (
+    SELECT
+        event_time_utc AS event_time,
+        primary_category AS category,
+        country_code AS country
+    FROM normalized_events
+),
+recent AS (
     SELECT
         category,
         country,
@@ -68,6 +81,15 @@ WHERE r.recent_count >= 10
 ORDER BY z_score DESC NULLS LAST, lift_ratio DESC;
 
 -- Query C: high-tension/negative actor interactions
+WITH events AS (
+    SELECT
+        event_time_utc AS event_time,
+        primary_category AS category,
+        goldstein_score AS tone,
+        actor1_name AS actor1,
+        actor2_name AS actor2
+    FROM normalized_events
+)
 SELECT
     COALESCE(actor1, 'Unknown') AS actor1,
     COALESCE(actor2, 'Unknown') AS actor2,

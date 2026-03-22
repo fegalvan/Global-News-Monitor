@@ -261,7 +261,7 @@ def print_event_line(event: dict[str, str]) -> None:
         lon = "Unknown"
 
     print(
-        f"{actor1} \u2192 {actor2} | {event_label} ({event_code}) | "
+        f"{actor1} -> {actor2} | {event_label} ({event_code}) | "
         f"{location} | {country} | {lat}, {lon}"
     )
 

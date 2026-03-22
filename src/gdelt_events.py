@@ -26,6 +26,15 @@ from src.connectors.gdelt.export_parser import (
 )
 
 
+def _close_session_if_needed(session: Any, created: bool) -> None:
+    if not created:
+        return
+
+    close = getattr(session, "close", None)
+    if callable(close):
+        close()
+
+
 def _get_export_zip_url(session: requests.Session) -> str:
     return _client._get_export_zip_url(session)
 
@@ -41,23 +50,35 @@ def _iter_zip_csv_rows(zip_stream: Any) -> Iterator[dict[str, Any]]:
 def get_latest_export_metadata(
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
+    created_session = session is None
     session = session or requests.Session()
-    export_url = _get_export_zip_url(session)
-    return parse_export_metadata(export_url)
+    try:
+        export_url = _get_export_zip_url(session)
+        return parse_export_metadata(export_url)
+    finally:
+        _close_session_if_needed(session, created_session)
 
 
 def fetch_export_rows(
     export_url: str,
     session: requests.Session | None = None,
 ) -> list[dict[str, Any]]:
-    return _read_zip_csv_rows(download_export_zip(export_url, session=session))
+    created_session = session is None
+    session = session or requests.Session()
+    try:
+        return _read_zip_csv_rows(download_export_zip(export_url, session=session))
+    finally:
+        _close_session_if_needed(session, created_session)
 
 
 def fetch_latest_events() -> list[dict[str, Any]]:
     # this wrapper keeps old monkeypatch-based tests working
     session = requests.Session()
-    metadata = get_latest_export_metadata(session)
-    return fetch_export_rows(metadata["export_url"], session=session)
+    try:
+        metadata = get_latest_export_metadata(session)
+        return fetch_export_rows(metadata["export_url"], session=session)
+    finally:
+        _close_session_if_needed(session, created=True)
 
 
 __all__ = [

@@ -30,6 +30,15 @@ _retry_metrics = {
 }
 
 
+def _close_session_if_needed(session: Any, created: bool) -> None:
+    if not created:
+        return
+
+    close = getattr(session, "close", None)
+    if callable(close):
+        close()
+
+
 def _on_metadata_retry(retry_state: Any) -> None:
     _retry_metrics["metadata_retries"] += 1
 
@@ -81,9 +90,13 @@ def _get_export_zip_url(session: requests.Session) -> str:
 def get_latest_export_metadata(
     session: requests.Session | None = None,
 ) -> dict[str, Any]:
+    created_session = session is None
     session = session or requests.Session()
-    export_url = _get_export_zip_url(session)
-    return parse_export_metadata(export_url)
+    try:
+        export_url = _get_export_zip_url(session)
+        return parse_export_metadata(export_url)
+    finally:
+        _close_session_if_needed(session, created_session)
 
 
 @retry(
@@ -98,14 +111,18 @@ def download_export_zip(
     session: requests.Session | None = None,
 ) -> bytes:
     # this helper is still used by a few compatibility paths
+    created_session = session is None
     session = session or requests.Session()
-    response = session.get(
-        export_url,
-        headers={"User-Agent": USER_AGENT},
-        timeout=DEFAULT_TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.content
+    try:
+        response = session.get(
+            export_url,
+            headers={"User-Agent": USER_AGENT},
+            timeout=DEFAULT_TIMEOUT,
+        )
+        response.raise_for_status()
+        return response.content
+    finally:
+        _close_session_if_needed(session, created_session)
 
 
 @retry(
@@ -120,29 +137,33 @@ def download_export_zip_to_spool(
     session: requests.Session | None = None,
 ) -> tempfile.SpooledTemporaryFile[bytes]:
     # this keeps giant exports from living as one huge bytes object in memory
+    created_session = session is None
     session = session or requests.Session()
-    response = session.get(
-        export_url,
-        headers={"User-Agent": USER_AGENT},
-        timeout=DEFAULT_TIMEOUT,
-        stream=True,
-    )
-    response.raise_for_status()
-
-    spool = tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES)
     try:
-        for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
-            if not chunk:
-                continue
-            spool.write(chunk)
-        spool.seek(0)
-        return spool
-    except Exception:
-        spool.close()
-        raise
+        response = session.get(
+            export_url,
+            headers={"User-Agent": USER_AGENT},
+            timeout=DEFAULT_TIMEOUT,
+            stream=True,
+        )
+        response.raise_for_status()
+
+        spool = tempfile.SpooledTemporaryFile(max_size=SPOOL_MAX_MEMORY_BYTES)
+        try:
+            for chunk in response.iter_content(chunk_size=DOWNLOAD_CHUNK_BYTES):
+                if not chunk:
+                    continue
+                spool.write(chunk)
+            spool.seek(0)
+            return spool
+        except Exception:
+            spool.close()
+            raise
+        finally:
+            # always close the underlying response body so sockets dont pile up
+            response.close()
     finally:
-        # always close the underlying response body so sockets dont pile up
-        response.close()
+        _close_session_if_needed(session, created_session)
 
 
 def fetch_export_rows(
@@ -165,5 +186,8 @@ def iter_export_rows(
 
 def fetch_latest_events() -> list[dict[str, Any]]:
     session = requests.Session()
-    metadata = get_latest_export_metadata(session)
-    return fetch_export_rows(metadata["export_url"], session=session)
+    try:
+        metadata = get_latest_export_metadata(session)
+        return fetch_export_rows(metadata["export_url"], session=session)
+    finally:
+        _close_session_if_needed(session, created=True)

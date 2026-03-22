@@ -13,6 +13,7 @@ def test_fields_to_keep_contains_expected_keys():
     assert "Actor2Name" in gdelt_events.FIELDS_TO_KEEP
     assert "EventCode" in gdelt_events.FIELDS_TO_KEEP
     assert "ActionGeo_FullName" in gdelt_events.FIELDS_TO_KEEP
+    assert "DATEADDED" in gdelt_events.FIELDS_TO_KEEP
 
 
 def test_field_indexes_contains_expected_keys():
@@ -21,6 +22,7 @@ def test_field_indexes_contains_expected_keys():
     assert gdelt_events.FIELD_INDEXES["Actor2Name"] == 16
     assert gdelt_events.FIELD_INDEXES["EventCode"] == 26
     assert gdelt_events.FIELD_INDEXES["ActionGeo_FullName"] == 52
+    assert gdelt_events.FIELD_INDEXES["DATEADDED"] == 59
 
 
 # this test checks that our zip + csv parser works
@@ -40,6 +42,7 @@ def test_read_zip_csv_rows_parses_in_memory_zip():
     row[gdelt_events.FIELD_INDEXES["ActionGeo_Lat"]] = "38.9072"
     row[gdelt_events.FIELD_INDEXES["ActionGeo_Long"]] = "-77.0369"
     row[gdelt_events.FIELD_INDEXES["AvgTone"]] = "-2.5"
+    row[gdelt_events.FIELD_INDEXES["DATEADDED"]] = "20260311001500"
     row[gdelt_events.FIELD_INDEXES["SOURCEURL"]] = "https://example.com/story"
 
     # create an in-memory zip file (so we dont write anything to disk)
@@ -66,6 +69,7 @@ def test_read_zip_csv_rows_parses_in_memory_zip():
             "ActionGeo_Lat": "38.9072",
             "ActionGeo_Long": "-77.0369",
             "AvgTone": "-2.5",
+            "DATEADDED": "20260311001500",
             "SOURCEURL": "https://example.com/story",
         }
     ]
@@ -116,6 +120,31 @@ def test_fetch_latest_events_returns_list_when_mocked(monkeypatch):
 
     # and that the data matches what we mocked
     assert events == expected_events
+
+
+def test_fetch_latest_events_closes_created_session(monkeypatch):
+    closed = {"value": False}
+
+    class FakeSession:
+        def close(self):
+            closed["value"] = True
+
+    monkeypatch.setattr(gdelt_events.requests, "Session", lambda: FakeSession())
+    monkeypatch.setattr(
+        gdelt_events,
+        "get_latest_export_metadata",
+        lambda session: {"export_url": "http://example.com/20240101000000.export.CSV.zip"},
+    )
+    monkeypatch.setattr(
+        gdelt_events,
+        "fetch_export_rows",
+        lambda export_url, session=None: [{"ok": True}],
+    )
+
+    events = gdelt_events.fetch_latest_events()
+
+    assert events == [{"ok": True}]
+    assert closed["value"] is True
 
 
 def test_parse_export_metadata_extracts_filename_and_timestamp():
