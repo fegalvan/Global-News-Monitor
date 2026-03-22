@@ -498,6 +498,17 @@ def fetch_event_stats(
                 SELECT *
                 FROM normalized_events
                 WHERE event_time_utc >= NOW() - make_interval(hours => %s)
+            ),
+            normalized_windowed AS (
+                SELECT
+                    *,
+                    CASE
+                        WHEN country_code IS NULL THEN NULL
+                        WHEN UPPER(BTRIM(country_code)) IN ('', 'UNKNOWN', 'NULL', 'NONE', 'N/A', 'NA', '-') THEN NULL
+                        WHEN UPPER(BTRIM(country_code)) ~ '^[A-Z]{2,3}$' THEN UPPER(BTRIM(country_code))
+                        ELSE NULL
+                    END AS country_code_norm
+                FROM windowed
             )
             SELECT
                 COUNT(*) AS total_events,
@@ -511,7 +522,7 @@ def fetch_event_stats(
                 ) AS missing_actor_count,
                 SUM(
                     CASE
-                        WHEN (COALESCE(TRIM(country_code), '') = '')
+                        WHEN country_code_norm IS NULL
                          AND latitude IS NULL
                          AND longitude IS NULL
                         THEN 1
@@ -525,7 +536,7 @@ def fetch_event_stats(
                         ELSE 0
                     END
                 ) AS fallback_unknown_category_count
-            FROM windowed
+            FROM normalized_windowed
             """,
             (safe_hours,),
         )
@@ -545,9 +556,19 @@ def fetch_event_stats(
 
         cursor.execute(
             """
+            WITH normalized_country AS (
+                SELECT
+                    CASE
+                        WHEN country_code IS NULL THEN NULL
+                        WHEN UPPER(BTRIM(country_code)) IN ('', 'UNKNOWN', 'NULL', 'NONE', 'N/A', 'NA', '-') THEN NULL
+                        WHEN UPPER(BTRIM(country_code)) ~ '^[A-Z]{2,3}$' THEN UPPER(BTRIM(country_code))
+                        ELSE NULL
+                    END AS country_code
+                FROM normalized_events
+                WHERE event_time_utc >= NOW() - make_interval(hours => %s)
+            )
             SELECT country_code, COUNT(*) AS count
-            FROM normalized_events
-            WHERE event_time_utc >= NOW() - make_interval(hours => %s)
+            FROM normalized_country
             GROUP BY country_code
             ORDER BY count DESC NULLS LAST, country_code ASC NULLS LAST
             LIMIT 10

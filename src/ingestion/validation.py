@@ -14,8 +14,9 @@ ALLOWED_CATEGORIES = {
     "cyber",
     "crisis",
 }
-ISO3_RE = re.compile(r"^[A-Z]{3}$")
+COUNTRY_CODE_RE = re.compile(r"^[A-Z]{2,3}$")
 EVENT_CODE_RE = re.compile(r"^\d{2,3}$")
+UNKNOWN_TEXT_VALUES = {"", "UNKNOWN", "NULL", "NONE", "N/A", "NA", "-"}
 
 
 def _to_decimal(value: Any) -> Decimal | None:
@@ -33,6 +34,18 @@ def _clean_actor(value: Any) -> str | None:
 
     text = str(value).strip()
     if not text or text.lower() in {"unknown", "null", "none", "-"}:
+        return None
+    return text
+
+
+def _normalize_country_code(value: Any) -> str | None:
+    if value is None:
+        return None
+
+    text = str(value).strip().upper()
+    if text in UNKNOWN_TEXT_VALUES:
+        return None
+    if not COUNTRY_CODE_RE.match(text):
         return None
     return text
 
@@ -64,13 +77,17 @@ def validate_and_clean_event(
         category = "politics"
         flags.append("category_fallback")
 
-    country = (
-        event.get("country_code")
-        or event.get("action_geo_country_code")
-        or ""
-    ).strip().upper()
-    if country and not ISO3_RE.match(country):
-        country = None
+    country = _normalize_country_code(event.get("action_geo_country_code"))
+    if country is None:
+        country = _normalize_country_code(event.get("country_code"))
+    if country is None:
+        raw_payload = event.get("raw_payload")
+        if isinstance(raw_payload, dict):
+            country = _normalize_country_code(raw_payload.get("ActionGeo_CountryCode"))
+    if country is None and (
+        event.get("action_geo_country_code") is not None
+        or event.get("country_code") is not None
+    ):
         flags.append("bad_country_code")
 
     lat = _to_decimal(event.get("latitude") or event.get("action_geo_lat"))
