@@ -64,3 +64,29 @@ def test_validate_and_clean_event_falls_back_to_raw_payload_country():
     assert dropped is False
     assert cleaned["action_geo_country_code"] == "BR"
     assert "bad_country_code" not in flags
+
+
+def test_validate_and_clean_event_preserves_zero_values_from_primary_fields():
+    event = {
+        "event_time_utc": datetime(2026, 3, 21, 0, 0, tzinfo=timezone.utc),
+        "event_code": "190",
+        "primary_category": "conflict",
+        "country_code": "US",
+        "latitude": Decimal("0"),
+        "longitude": Decimal("0"),
+        "tone": Decimal("0"),
+        "actor1_name": "A",
+        "actor2_name": "B",
+        "raw_payload": {},
+    }
+
+    cleaned, flags, dropped = validate_and_clean_event(
+        event,
+        datetime(2026, 3, 21, 0, 15, tzinfo=timezone.utc),
+    )
+
+    assert dropped is False
+    assert cleaned["action_geo_lat"] == Decimal("0")
+    assert cleaned["action_geo_long"] == Decimal("0")
+    assert cleaned["avg_tone"] == Decimal("0")
+    assert "missing_tone" not in flags
