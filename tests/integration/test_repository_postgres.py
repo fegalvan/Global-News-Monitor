@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 from src.ingestion.repository import (
     claim_checkpoint,
+    insert_data_quality_audit,
     insert_checkpoint,
     insert_ingestion_run,
     insert_raw_and_normalized_batch,
@@ -45,6 +46,7 @@ def pg_connection():
         with connection.cursor() as cursor:
             cursor.execute(_load_sql(root / "sql" / "stage1_schema.sql"))
             cursor.execute(_load_sql(root / "sql" / "stage2_schema.sql"))
+            cursor.execute(_load_sql(root / "sql" / "stage5_country_mapping_and_quality.sql"))
 
     yield connection
     connection.close()
@@ -54,7 +56,7 @@ def pg_connection():
 def clean_tables(pg_connection):
     with pg_connection.transaction():
         with pg_connection.cursor() as cursor:
-            cursor.execute("TRUNCATE TABLE normalized_events, raw_events, gdelt_export_checkpoints, ingestion_runs RESTART IDENTITY CASCADE")
+            cursor.execute("TRUNCATE TABLE data_quality_audit, normalized_events, raw_events, gdelt_export_checkpoints, ingestion_runs RESTART IDENTITY CASCADE")
     yield
 
 
@@ -73,6 +75,7 @@ def _build_event(run_id, dedupe_key: str) -> dict:
         "event_code": "190",
         "action_geo_full_name": "Washington, DC",
         "action_geo_country_code": "USA",
+        "country_name": "United States",
         "action_geo_lat": Decimal("38.9072"),
         "action_geo_long": Decimal("-77.0369"),
         "avg_tone": Decimal("-2.5"),
@@ -191,3 +194,30 @@ def test_checkpoint_completion_updates_run(pg_connection):
     assert run_row["status"] == "completed"
     assert run_row["events_inserted"] == 9
     assert run_row["events_duplicated"] == 1
+
+
+def test_insert_data_quality_audit_creates_row(pg_connection):
+    with pg_connection.transaction():
+        insert_data_quality_audit(
+            pg_connection,
+            total_events=25,
+            missing_actor_pct=4.0,
+            missing_geo_pct=8.0,
+            unknown_country_pct=12.0,
+        )
+
+    with pg_connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT total_events, missing_actor_pct, missing_geo_pct, unknown_country_pct
+            FROM data_quality_audit
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        )
+        audit_row = cursor.fetchone()
+
+    assert audit_row["total_events"] == 25
+    assert float(audit_row["missing_actor_pct"]) == 4.0
+    assert float(audit_row["missing_geo_pct"]) == 8.0
+    assert float(audit_row["unknown_country_pct"]) == 12.0

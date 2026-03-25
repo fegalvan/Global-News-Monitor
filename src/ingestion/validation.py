@@ -5,6 +5,8 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from src.utils.country_mapping import map_country_code
+
 ALLOWED_CATEGORIES = {
     "conflict",
     "protest",
@@ -127,6 +129,7 @@ def validate_and_clean_event(
             "event_code": event_code,
             "primary_category": category,
             "action_geo_country_code": country,
+            "country_name": map_country_code(country),
             "action_geo_lat": lat,
             "action_geo_long": lon,
             "avg_tone": tone,

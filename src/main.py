@@ -13,6 +13,8 @@ from src.ingestion.repository import (
     fetch_event_stats,
     fetch_recent_ingestion_runs,
     fetch_recent_normalized_events,
+    fetch_spike_rows,
+    fetch_tension_rows,
 )
 from src.pipeline.ingest_service import ingest_latest_export
 
@@ -96,93 +98,6 @@ ROOT_EVENT_LABELS = {
 
 MAX_EVENTS_PER_CATEGORY = 3
 MAX_BREAKING_EVENTS = 5
-
-SPIKES_SQL = """
-WITH events AS (
-    SELECT
-        event_time_utc AS event_time,
-        primary_category AS category,
-        country_code AS country,
-        goldstein_score AS tone,
-        actor1_name AS actor1,
-        actor2_name AS actor2
-    FROM normalized_events
-),
-recent AS (
-    SELECT
-        category,
-        country,
-        COUNT(*) AS recent_count
-    FROM events
-    WHERE event_time >= NOW() - make_interval(hours => %s)
-    GROUP BY 1, 2
-),
-baseline_daily AS (
-    SELECT
-        category,
-        country,
-        date_trunc('day', event_time) AS day_bucket,
-        COUNT(*) AS daily_count
-    FROM events
-    WHERE event_time >= NOW() - INTERVAL '15 days'
-      AND event_time < NOW() - make_interval(hours => %s)
-    GROUP BY 1, 2, 3
-),
-baseline_stats AS (
-    SELECT
-        category,
-        country,
-        AVG(daily_count) AS baseline_avg,
-        STDDEV_POP(daily_count) AS baseline_std
-    FROM baseline_daily
-    GROUP BY 1, 2
-)
-SELECT
-    r.category,
-    r.country,
-    r.recent_count,
-    b.baseline_avg,
-    ROUND(
-        (r.recent_count - b.baseline_avg) / NULLIF(b.baseline_std, 0),
-        2
-    ) AS z_score,
-    ROUND(r.recent_count / NULLIF(b.baseline_avg, 0), 2) AS lift_ratio
-FROM recent r
-JOIN baseline_stats b
-    ON r.category = b.category
-   AND r.country = b.country
-WHERE r.recent_count >= 10
-ORDER BY z_score DESC NULLS LAST, lift_ratio DESC
-LIMIT 50
-"""
-
-TENSION_SQL = """
-WITH events AS (
-    SELECT
-        event_time_utc AS event_time,
-        primary_category AS category,
-        country_code AS country,
-        goldstein_score AS tone,
-        actor1_name AS actor1,
-        actor2_name AS actor2
-    FROM normalized_events
-)
-SELECT
-    COALESCE(actor1, 'Unknown') AS actor1,
-    COALESCE(actor2, 'Unknown') AS actor2,
-    category,
-    COUNT(*) AS event_count,
-    ROUND(AVG(tone)::numeric, 2) AS avg_tone,
-    MIN(tone) AS worst_tone
-FROM events
-WHERE event_time >= NOW() - make_interval(hours => %s)
-  AND tone IS NOT NULL
-  AND tone <= -5
-GROUP BY 1, 2, 3
-HAVING COUNT(*) >= 3
-ORDER BY avg_tone ASC, event_count DESC
-LIMIT 50
-"""
 
 MOMENTUM_SQL = """
 WITH events AS (
@@ -325,11 +240,57 @@ def _format_percent(count: int, total: int) -> str:
     return f"{(count / total) * 100:.2f}%"
 
 
-def run_latest_command(limit: int) -> int:
-    with get_connection() as connection:
-        rows = fetch_recent_normalized_events(connection, limit=limit)
+def _format_country_display(country_name: object, country_code: object) -> str:
+    name = str(country_name or "").strip() or "Unknown"
+    code = str(country_code or "").strip()
+    if not code or name == "Unknown":
+        return name
+    return f"{name} ({code})"
 
-    print(f"Latest normalized events (limit={max(int(limit), 1)})")
+
+def get_latest_payload(limit: int) -> dict[str, object]:
+    safe_limit = max(int(limit), 1)
+    with get_connection() as connection:
+        rows = fetch_recent_normalized_events(connection, limit=safe_limit)
+
+    return {
+        "limit": safe_limit,
+        "rows": rows,
+    }
+
+
+def get_stats_payload(hours: int) -> dict[str, object]:
+    with get_connection() as connection:
+        return fetch_event_stats(connection, hours=hours)
+
+
+def get_spikes_payload(hours: int) -> dict[str, object]:
+    safe_hours = max(int(hours), 1)
+    with get_connection() as connection:
+        rows = fetch_spike_rows(connection, hours=safe_hours)
+
+    return {
+        "hours": safe_hours,
+        "rows": rows,
+    }
+
+
+def get_tension_payload(hours: int) -> dict[str, object]:
+    safe_hours = max(int(hours), 1)
+    with get_connection() as connection:
+        rows = fetch_tension_rows(connection, hours=safe_hours)
+
+    return {
+        "hours": safe_hours,
+        "rows": rows,
+    }
+
+
+def run_latest_command(limit: int) -> int:
+    payload = get_latest_payload(limit=limit)
+    rows = payload["rows"]
+
+    print(f"Latest normalized events (limit={payload['limit']})")
     if not rows:
         print("No rows found in normalized_events.")
         return 0
@@ -346,7 +307,7 @@ def run_latest_command(limit: int) -> int:
             f"{_format_utc(row.get('event_time_utc'))} | "
             f"{row.get('actor1_name') or 'Unknown'} -> {row.get('actor2_name') or 'Unknown'} | "
             f"{event_label} ({event_code or 'Unknown'}) | "
-            f"{row.get('country_code') or 'Unknown'} | "
+            f"{_format_country_display(row.get('country_name'), row.get('country_code'))} | "
             f"cat={category or 'Unknown'} conf={row.get('category_confidence')} "
             f"tone={row.get('goldstein_score')}"
         )
@@ -378,13 +339,13 @@ def run_runs_command(limit: int) -> int:
 
 
 def run_stats_command(hours: int) -> int:
-    with get_connection() as connection:
-        stats = fetch_event_stats(connection, hours=hours)
+    stats = get_stats_payload(hours=hours)
 
     overview = stats["overview"]
     total_events = int(overview.get("total_events") or 0)
     missing_actor_count = int(overview.get("missing_actor_count") or 0)
     missing_geo_count = int(overview.get("missing_geo_count") or 0)
+    unknown_country_count = int(overview.get("unknown_country_count") or 0)
     fallback_unknown_category_count = int(overview.get("fallback_unknown_category_count") or 0)
 
     exact_count = 0
@@ -405,7 +366,8 @@ def run_stats_command(hours: int) -> int:
     print(f"total_events={total_events}")
     print(
         f"missing_actor={missing_actor_count} ({_format_percent(missing_actor_count, total_events)}) "
-        f"missing_geo={missing_geo_count} ({_format_percent(missing_geo_count, total_events)})"
+        f"missing_geo={missing_geo_count} ({_format_percent(missing_geo_count, total_events)}) "
+        f"unknown_country={unknown_country_count} ({_format_percent(unknown_country_count, total_events)})"
     )
     print(
         "translation_coverage "
@@ -422,18 +384,16 @@ def run_stats_command(hours: int) -> int:
 
     print("top_countries:")
     for row in stats["top_countries"]:
-        print(f"- {row.get('country_code') or 'Unknown'}: {row.get('count')}")
+        print(f"- {row.get('country_name') or 'Unknown'}: {row.get('count')}")
 
     return 0
 
 
 def run_spikes_command(hours: int) -> int:
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(SPIKES_SQL, (max(int(hours), 1), max(int(hours), 1)))
-            rows = list(cursor.fetchall())
+    payload = get_spikes_payload(hours=hours)
+    rows = payload["rows"]
 
-    print(f"Spikes (recent window={max(int(hours), 1)} hour(s))")
+    print(f"Spikes (recent window={payload['hours']} hour(s))")
     if not rows:
         print("No spike rows found.")
         return 0
@@ -441,7 +401,7 @@ def run_spikes_command(hours: int) -> int:
     for row in rows:
         print(
             f"{row.get('category') or 'unknown'} | "
-            f"{row.get('country') or 'Unknown'} | "
+            f"{row.get('country_name') or 'Unknown'} | "
             f"recent={row.get('recent_count')} baseline={row.get('baseline_avg')} "
             f"z={row.get('z_score')} lift={row.get('lift_ratio')}"
         )
@@ -449,12 +409,10 @@ def run_spikes_command(hours: int) -> int:
 
 
 def run_tension_command(hours: int) -> int:
-    with get_connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(TENSION_SQL, (max(int(hours), 1),))
-            rows = list(cursor.fetchall())
+    payload = get_tension_payload(hours=hours)
+    rows = payload["rows"]
 
-    print(f"High-tension events (window={max(int(hours), 1)} hour(s))")
+    print(f"High-tension events (window={payload['hours']} hour(s))")
     if not rows:
         print("No high-tension rows found.")
         return 0

@@ -3,6 +3,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from src.ingestion.transform import build_dedupe_key, normalize_event_for_insert
+from src.utils.country_mapping import map_country_code
 
 
 def test_build_dedupe_key_prefers_global_event_id():
@@ -67,6 +68,7 @@ def test_normalize_event_for_insert_maps_expected_fields():
     assert normalized["avg_tone"] == Decimal("-2.5")
     assert normalized["goldstein_score"] == Decimal("-5.0")
     assert normalized["source_url"] == "https://example.com/cyber-attack-report"
+    assert normalized["country_name"] == map_country_code("USA")
     assert normalized["event_time_utc"].isoformat() == "2026-03-13T00:15:00+00:00"
     assert normalized["primary_category"] == "cyber"
     assert normalized["category_confidence"] > Decimal("0.8")

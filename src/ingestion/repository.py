@@ -10,6 +10,92 @@ from uuid import UUID
 
 import psycopg
 
+SPIKES_SQL = """
+WITH events AS (
+    SELECT
+        event_time_utc AS event_time,
+        primary_category AS category,
+        country_name,
+        goldstein_score AS tone,
+        actor1_name AS actor1,
+        actor2_name AS actor2
+    FROM normalized_events
+),
+recent AS (
+    SELECT
+        category,
+        country_name,
+        COUNT(*) AS recent_count
+    FROM events
+    WHERE event_time >= NOW() - make_interval(hours => %s)
+    GROUP BY 1, 2
+),
+baseline_daily AS (
+    SELECT
+        category,
+        country_name,
+        date_trunc('day', event_time) AS day_bucket,
+        COUNT(*) AS daily_count
+    FROM events
+    WHERE event_time >= NOW() - INTERVAL '15 days'
+      AND event_time < NOW() - make_interval(hours => %s)
+    GROUP BY 1, 2, 3
+),
+baseline_stats AS (
+    SELECT
+        category,
+        country_name,
+        AVG(daily_count) AS baseline_avg,
+        STDDEV_POP(daily_count) AS baseline_std
+    FROM baseline_daily
+    GROUP BY 1, 2
+)
+SELECT
+    r.category,
+    r.country_name,
+    r.recent_count,
+    b.baseline_avg,
+    ROUND(
+        (r.recent_count - b.baseline_avg) / NULLIF(b.baseline_std, 0),
+        2
+    ) AS z_score,
+    ROUND(r.recent_count / NULLIF(b.baseline_avg, 0), 2) AS lift_ratio
+FROM recent r
+JOIN baseline_stats b
+    ON r.category = b.category
+   AND r.country_name = b.country_name
+WHERE r.recent_count >= 10
+ORDER BY z_score DESC NULLS LAST, lift_ratio DESC
+LIMIT 50
+"""
+
+TENSION_SQL = """
+WITH events AS (
+    SELECT
+        event_time_utc AS event_time,
+        primary_category AS category,
+        goldstein_score AS tone,
+        actor1_name AS actor1,
+        actor2_name AS actor2
+    FROM normalized_events
+)
+SELECT
+    COALESCE(actor1, 'Unknown') AS actor1,
+    COALESCE(actor2, 'Unknown') AS actor2,
+    category,
+    COUNT(*) AS event_count,
+    ROUND(AVG(tone)::numeric, 2) AS avg_tone,
+    MIN(tone) AS worst_tone
+FROM events
+WHERE event_time >= NOW() - make_interval(hours => %s)
+  AND tone IS NOT NULL
+  AND tone <= -5
+GROUP BY 1, 2, 3
+HAVING COUNT(*) >= 3
+ORDER BY avg_tone ASC, event_count DESC
+LIMIT 50
+"""
+
 
 def insert_ingestion_run(
     connection: psycopg.Connection,
@@ -308,7 +394,7 @@ def insert_raw_and_normalized_batch(
                     continue
 
                 normalized_placeholders.append(
-                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
                 )
                 normalized_params.extend(
                     [
@@ -318,6 +404,7 @@ def insert_raw_and_normalized_batch(
                         event.get("actor2_name"),
                         event.get("event_code"),
                         event.get("action_geo_country_code"),
+                        event.get("country_name"),
                         event.get("action_geo_lat"),
                         event.get("action_geo_long"),
                         event.get("goldstein_score"),
@@ -340,6 +427,7 @@ def insert_raw_and_normalized_batch(
                     actor2_name,
                     event_code,
                     country_code,
+                    country_name,
                     latitude,
                     longitude,
                     goldstein_score,
@@ -374,6 +462,7 @@ def fetch_recent_normalized_events(
                 actor2_name,
                 event_code,
                 country_code,
+                country_name,
                 latitude,
                 longitude,
                 primary_category,
@@ -466,6 +555,13 @@ def fetch_event_stats(
                 ) AS missing_geo_count,
                 SUM(
                     CASE
+                        WHEN COALESCE(NULLIF(BTRIM(country_name), ''), 'Unknown') = 'Unknown'
+                        THEN 1
+                        ELSE 0
+                    END
+                ) AS unknown_country_count,
+                SUM(
+                    CASE
                         WHEN category_reason = 'fallback_unknown_event_code'
                         THEN 1
                         ELSE 0
@@ -493,19 +589,14 @@ def fetch_event_stats(
             """
             WITH normalized_country AS (
                 SELECT
-                    CASE
-                        WHEN country_code IS NULL THEN NULL
-                        WHEN UPPER(BTRIM(country_code)) IN ('', 'UNKNOWN', 'NULL', 'NONE', 'N/A', 'NA', '-') THEN NULL
-                        WHEN UPPER(BTRIM(country_code)) ~ '^[A-Z]{2,3}$' THEN UPPER(BTRIM(country_code))
-                        ELSE NULL
-                    END AS country_code
+                    COALESCE(NULLIF(BTRIM(country_name), ''), 'Unknown') AS country_name
                 FROM normalized_events
                 WHERE event_time_utc >= NOW() - make_interval(hours => %s)
             )
-            SELECT country_code, COUNT(*) AS count
+            SELECT country_name, COUNT(*) AS count
             FROM normalized_country
-            GROUP BY country_code
-            ORDER BY count DESC NULLS LAST, country_code ASC NULLS LAST
+            GROUP BY country_name
+            ORDER BY count DESC, country_name ASC
             LIMIT 10
             """,
             (safe_hours,),
@@ -531,3 +622,52 @@ def fetch_event_stats(
         "top_countries": top_countries,
         "event_code_counts": event_code_counts,
     }
+
+
+def fetch_spike_rows(
+    connection: psycopg.Connection,
+    hours: int = 24,
+) -> list[dict[str, Any]]:
+    """Fetch category-country spike candidates for a recent window."""
+
+    safe_hours = max(int(hours), 1)
+    with connection.cursor() as cursor:
+        cursor.execute(SPIKES_SQL, (safe_hours, safe_hours))
+        return list(cursor.fetchall())
+
+
+def fetch_tension_rows(
+    connection: psycopg.Connection,
+    hours: int = 48,
+) -> list[dict[str, Any]]:
+    """Fetch high-tension actor interactions for a recent window."""
+
+    safe_hours = max(int(hours), 1)
+    with connection.cursor() as cursor:
+        cursor.execute(TENSION_SQL, (safe_hours,))
+        return list(cursor.fetchall())
+
+
+def insert_data_quality_audit(
+    connection: psycopg.Connection,
+    *,
+    total_events: int,
+    missing_actor_pct: float,
+    missing_geo_pct: float,
+    unknown_country_pct: float,
+) -> None:
+    """Persist a lightweight ingestion quality snapshot."""
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            INSERT INTO data_quality_audit (
+                total_events,
+                missing_actor_pct,
+                missing_geo_pct,
+                unknown_country_pct
+            )
+            VALUES (%s, %s, %s, %s)
+            """,
+            (total_events, missing_actor_pct, missing_geo_pct, unknown_country_pct),
+        )

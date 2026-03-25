@@ -31,13 +31,13 @@ WITH events AS (
     SELECT
         event_time_utc AS event_time,
         primary_category AS category,
-        country_code AS country
+        country_name
     FROM normalized_events
 ),
 recent AS (
     SELECT
         category,
-        country,
+        country_name,
         COUNT(*) AS recent_count
     FROM events
     WHERE event_time >= NOW() - INTERVAL '24 hours'
@@ -46,7 +46,7 @@ recent AS (
 baseline_daily AS (
     SELECT
         category,
-        country,
+        country_name,
         date_trunc('day', event_time) AS day_bucket,
         COUNT(*) AS daily_count
     FROM events
@@ -57,7 +57,7 @@ baseline_daily AS (
 baseline_stats AS (
     SELECT
         category,
-        country,
+        country_name,
         AVG(daily_count) AS baseline_avg,
         STDDEV_POP(daily_count) AS baseline_std
     FROM baseline_daily
@@ -65,7 +65,7 @@ baseline_stats AS (
 )
 SELECT
     r.category,
-    r.country,
+    r.country_name,
     r.recent_count,
     b.baseline_avg,
     ROUND(
@@ -76,7 +76,7 @@ SELECT
 FROM recent r
 JOIN baseline_stats b
     ON r.category = b.category
-   AND r.country = b.country
+   AND r.country_name = b.country_name
 WHERE r.recent_count >= 10
 ORDER BY z_score DESC NULLS LAST, lift_ratio DESC;
 
@@ -111,13 +111,13 @@ WITH events AS (
     SELECT
         event_time_utc AS event_time,
         primary_category AS category,
-        country_code AS country
+        country_name
     FROM normalized_events
 ),
 recent AS (
     SELECT
         category,
-        country,
+        country_name,
         COUNT(*) AS recent_count
     FROM events
     WHERE event_time >= NOW() - make_interval(hours => 24)
@@ -126,7 +126,7 @@ recent AS (
 baseline_daily AS (
     SELECT
         category,
-        country,
+        country_name,
         date_trunc('day', event_time) AS day_bucket,
         COUNT(*) AS daily_count
     FROM events
@@ -137,7 +137,7 @@ baseline_daily AS (
 baseline_stats AS (
     SELECT
         category,
-        country,
+        country_name,
         AVG(daily_count) AS baseline_avg,
         STDDEV_POP(daily_count) AS baseline_std
     FROM baseline_daily
@@ -146,7 +146,7 @@ baseline_stats AS (
 spikes AS (
     SELECT
         r.category,
-        r.country,
+        r.country_name,
         r.recent_count,
         b.baseline_avg,
         b.baseline_std,
@@ -158,7 +158,7 @@ spikes AS (
     FROM recent r
     JOIN baseline_stats b
         ON r.category = b.category
-       AND r.country = b.country
+       AND r.country_name = b.country_name
     WHERE r.recent_count >= 10
 )
 INSERT INTO analytics_spike_snapshot (
@@ -176,7 +176,7 @@ SELECT
     NOW(),
     24,
     category,
-    country,
+    country_name,
     recent_count,
     baseline_avg,
     baseline_std,

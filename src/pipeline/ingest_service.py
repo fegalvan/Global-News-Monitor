@@ -19,6 +19,7 @@ from src.db import get_connection, transaction
 from src.pipeline.data_quality import summarize_batch_quality
 from src.ingestion.repository import (
     claim_checkpoint,
+    insert_data_quality_audit,
     insert_ingestion_run,
     insert_checkpoint,
     insert_raw_and_normalized_batch,
@@ -182,6 +183,7 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
         dropped_row_count = 0
         missing_actor_count = 0
         missing_geo_count = 0
+        unknown_country_count = 0
         category_counts: dict[str, int] = {}
 
         # this is where we stream the gdelt export rows and process them in chunks
@@ -205,6 +207,7 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             quality = summarize_batch_quality(normalized_events)
             missing_actor_count += quality["missing_actor_count"]
             missing_geo_count += quality["missing_geo_count"]
+            unknown_country_count += quality["unknown_country_count"]
             for category, category_count in quality["category_counts"].items():
                 category_counts[category] = category_counts.get(category, 0) + category_count
             logger.info(
@@ -282,6 +285,15 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
         export_lag_seconds = max(int((time.time() - export_time_utc.timestamp())), 0)
         missing_actor_percent = (missing_actor_count / raw_row_count * 100) if raw_row_count else 0.0
         missing_geo_percent = (missing_geo_count / raw_row_count * 100) if raw_row_count else 0.0
+        unknown_country_percent = (unknown_country_count / raw_row_count * 100) if raw_row_count else 0.0
+        with transaction(connection):
+            insert_data_quality_audit(
+                connection=connection,
+                total_events=raw_row_count,
+                missing_actor_pct=missing_actor_percent,
+                missing_geo_pct=missing_geo_percent,
+                unknown_country_pct=unknown_country_percent,
+            )
         logger.info(
             "[INGEST METRICS] events_processed=%s rows_inserted=%s rate=%.2f events/sec retries=%s export_lag_seconds=%s",
             raw_row_count,
@@ -291,9 +303,10 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             export_lag_seconds,
         )
         logger.info(
-            "[DATA QUALITY] missing_actor_percent=%.2f missing_geo_percent=%.2f category_distribution=%s",
+            "[DATA QUALITY] missing_actor_percent=%.2f missing_geo_percent=%.2f unknown_country_percent=%.2f category_distribution=%s",
             missing_actor_percent,
             missing_geo_percent,
+            unknown_country_percent,
             category_counts,
         )
         if missing_actor_percent > 35:
@@ -305,6 +318,11 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             logger.warning(
                 "data_quality_warning reason=high_missing_geo_percent value=%.2f threshold=45",
                 missing_geo_percent,
+            )
+        if unknown_country_percent > 30:
+            logger.warning(
+                "data_quality_warning reason=high_unknown_country_percent value=%.2f threshold=30",
+                unknown_country_percent,
             )
 
         return {

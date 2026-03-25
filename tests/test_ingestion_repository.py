@@ -3,6 +3,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 from src.ingestion.repository import (
+    insert_data_quality_audit,
     insert_checkpoint,
     insert_raw_and_normalized_batch,
     reset_stale_processing_checkpoints,
@@ -45,7 +46,12 @@ class FakeCursor:
 
         if "INSERT INTO normalized_events" in normalized_query:
             self._last_fetchone = None
-            self.rowcount = len(params) // 14 if params else 0
+            self.rowcount = len(params) // 15 if params else 0
+            return
+
+        if "INSERT INTO data_quality_audit" in normalized_query:
+            self._last_fetchone = None
+            self.rowcount = 1
             return
 
         if "SELECT * FROM gdelt_export_checkpoints" in normalized_query:
@@ -89,6 +95,7 @@ def _build_event(dedupe_key: str) -> dict:
         "event_code": "190",
         "action_geo_full_name": "Washington, DC",
         "action_geo_country_code": "USA",
+        "country_name": "United States",
         "action_geo_lat": Decimal("38.9072"),
         "action_geo_long": Decimal("-77.0369"),
         "avg_tone": Decimal("-2.5"),
@@ -157,3 +164,21 @@ def test_reset_stale_processing_checkpoints_returns_updated_rows():
     )
 
     assert updated_rows == 3
+
+
+def test_insert_data_quality_audit_writes_one_row():
+    fake_cursor = FakeCursor()
+    connection = FakeConnection(fake_cursor)
+
+    insert_data_quality_audit(
+        connection,
+        total_events=100,
+        missing_actor_pct=10.0,
+        missing_geo_pct=20.0,
+        unknown_country_pct=30.0,
+    )
+
+    audit_insert_count = sum(
+        1 for query, _ in fake_cursor.executed if "INSERT INTO data_quality_audit" in query
+    )
+    assert audit_insert_count == 1

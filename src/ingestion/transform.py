@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from src.domain.events.categorization import categorize_event
+from src.utils.country_mapping import map_country_code
 
 SOURCE = "gdelt_events_v2"
 WHITESPACE_PATTERN = re.compile(r"\s+")
@@ -142,6 +143,7 @@ def normalize_event_for_insert(
         "event_code": _clean_text(event.get("EventCode")),
         "action_geo_full_name": _clean_text(event.get("ActionGeo_FullName")),
         "action_geo_country_code": _clean_text(event.get("ActionGeo_CountryCode")),
+        "country_name": map_country_code(event.get("ActionGeo_CountryCode")),
         "action_geo_lat": _parse_decimal(event.get("ActionGeo_Lat")),
         "action_geo_long": _parse_decimal(event.get("ActionGeo_Long")),
         "avg_tone": _parse_decimal(event.get("AvgTone")),

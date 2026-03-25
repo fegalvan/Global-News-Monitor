@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS normalized_events (
     actor2_name TEXT NULL,
     event_code TEXT NULL,
     country_code TEXT NULL,
+    country_name TEXT NOT NULL DEFAULT 'Unknown',
     latitude NUMERIC(9, 6) NULL,
     longitude NUMERIC(9, 6) NULL,
     location_point GEOGRAPHY(Point,4326)
@@ -60,6 +61,9 @@ GENERATED ALWAYS AS (
     ST_SetSRID(ST_MakePoint(longitude, latitude),4326)
 ) STORED;
 
+ALTER TABLE normalized_events
+ADD COLUMN IF NOT EXISTS country_name TEXT NOT NULL DEFAULT 'Unknown';
+
 CREATE INDEX IF NOT EXISTS idx_normalized_events_event_time_utc
     ON normalized_events (event_time_utc);
 
@@ -68,6 +72,9 @@ CREATE INDEX IF NOT EXISTS idx_normalized_events_event_code
 
 CREATE INDEX IF NOT EXISTS idx_normalized_events_country_code
     ON normalized_events (country_code);
+
+CREATE INDEX IF NOT EXISTS idx_normalized_events_country_name
+    ON normalized_events (country_name);
 
 CREATE INDEX IF NOT EXISTS idx_normalized_events_primary_category
     ON normalized_events (primary_category);

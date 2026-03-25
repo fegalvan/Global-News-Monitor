@@ -17,6 +17,7 @@ The repo currently supports two main workflows:
 - writes raw landing rows and normalized analytical rows
 - deduplicates events by deterministic key
 - exposes CLI commands for ingesting, migrating, and inspecting recent data quality
+- exposes a FastAPI read API for the main analytics views
 
 ## Why GDELT Event Exports
 
@@ -152,10 +153,27 @@ The `stats` command summarizes:
 - total events in the time window
 - missing actor percentage
 - missing geo percentage
+- unknown country percentage
 - translation coverage by exact vs root event mapping
 - fallback category usage
 - top categories
 - top countries
+
+### Run the read API
+
+Start the API locally with:
+
+```bash
+uvicorn src.api.main:app --reload
+```
+
+Available endpoints:
+
+- `GET /health`
+- `GET /latest`
+- `GET /stats`
+- `GET /spikes`
+- `GET /tension`
 
 ## Local Setup
 
@@ -169,6 +187,8 @@ Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
+
+This includes the API dependencies `fastapi` and `uvicorn`.
 
 ### Environment Configuration
 
