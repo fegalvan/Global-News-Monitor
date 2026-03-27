@@ -12,6 +12,42 @@ def test_health_endpoint_returns_ok():
     assert response.json() == {"status": "ok"}
 
 
+def test_readiness_endpoint_returns_ok_when_ready(monkeypatch):
+    client = TestClient(app)
+    monkeypatch.setattr(
+        "src.api.main.get_readiness_payload",
+        lambda max_age_minutes: {
+            "ready": True,
+            "reason": "ok",
+            "max_age_minutes": max_age_minutes,
+            "ingest_age_seconds": 120,
+        },
+    )
+
+    response = client.get("/health/ready", params={"max_age_minutes": 60})
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+
+
+def test_readiness_endpoint_returns_503_when_not_ready(monkeypatch):
+    client = TestClient(app)
+    monkeypatch.setattr(
+        "src.api.main.get_readiness_payload",
+        lambda max_age_minutes: {
+            "ready": False,
+            "reason": "stale_ingest",
+            "max_age_minutes": max_age_minutes,
+            "ingest_age_seconds": 7200,
+        },
+    )
+
+    response = client.get("/health/ready", params={"max_age_minutes": 30})
+
+    assert response.status_code == 503
+    assert response.json()["reason"] == "stale_ingest"
+
+
 def test_latest_endpoint_returns_json(monkeypatch):
     client = TestClient(app)
     monkeypatch.setattr(

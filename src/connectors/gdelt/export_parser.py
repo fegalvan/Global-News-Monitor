@@ -4,6 +4,7 @@ import csv
 import io
 import tempfile
 import zipfile
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
 import re
@@ -72,6 +73,8 @@ def read_zip_csv_rows(zip_bytes: bytes) -> list[dict[str, Any]]:
 
 def iter_zip_csv_rows(
     zip_stream: io.BytesIO | tempfile.SpooledTemporaryFile[bytes],
+    *,
+    on_parse_error: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> Iterator[dict[str, Any]]:
     # this iterator keeps row parsing streaming-friendly for bigger exports
     with zipfile.ZipFile(zip_stream) as zipped_file:
@@ -83,10 +86,19 @@ def iter_zip_csv_rows(
             text_stream = io.TextIOWrapper(csv_file, encoding="utf-8", newline="")
             reader = csv.reader(text_stream, delimiter="\t")
 
-            for row in reader:
+            for row_number, row in enumerate(reader, start=1):
                 try:
                     event = {field: row[index].strip() for field, index in FIELD_INDEXES.items()}
                 except (IndexError, AttributeError):
+                    if on_parse_error is not None:
+                        on_parse_error(
+                            "parse_error",
+                            {
+                                "row_number": row_number,
+                                "row_length": len(row),
+                                "row": row,
+                            },
+                        )
                     continue
 
                 yield event

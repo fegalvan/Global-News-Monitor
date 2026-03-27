@@ -3,18 +3,30 @@ from decimal import Decimal
 from uuid import uuid4
 
 from src.ingestion.repository import (
+    insert_dropped_events,
     insert_data_quality_audit,
     insert_checkpoint,
     insert_raw_and_normalized_batch,
+    release_ingestion_lock,
     reset_stale_processing_checkpoints,
+    try_acquire_ingestion_lock,
 )
 
 
 class FakeCursor:
-    def __init__(self, raw_insert_results=None, selected_checkpoint=None, update_rowcount=0):
+    def __init__(
+        self,
+        raw_insert_results=None,
+        selected_checkpoint=None,
+        update_rowcount=0,
+        advisory_acquired=True,
+        advisory_released=True,
+    ):
         self.raw_insert_results = list(raw_insert_results or [])
         self.selected_checkpoint = selected_checkpoint
         self.update_rowcount = update_rowcount
+        self.advisory_acquired = advisory_acquired
+        self.advisory_released = advisory_released
         self.executed = []
         self.rowcount = 0
         self._last_fetchone = None
@@ -54,8 +66,21 @@ class FakeCursor:
             self.rowcount = 1
             return
 
+        if "INSERT INTO dropped_events" in normalized_query:
+            self._last_fetchone = None
+            self.rowcount = len(params) // 9 if params else 0
+            return
+
         if "SELECT * FROM gdelt_export_checkpoints" in normalized_query:
             self._last_fetchone = self.selected_checkpoint
+            return
+
+        if "SELECT pg_try_advisory_lock" in normalized_query:
+            self._last_fetchone = {"acquired": self.advisory_acquired}
+            return
+
+        if "SELECT pg_advisory_unlock" in normalized_query:
+            self._last_fetchone = {"released": self.advisory_released}
             return
 
         if "UPDATE gdelt_export_checkpoints" in normalized_query:
@@ -182,3 +207,37 @@ def test_insert_data_quality_audit_writes_one_row():
         1 for query, _ in fake_cursor.executed if "INSERT INTO data_quality_audit" in query
     )
     assert audit_insert_count == 1
+
+
+def test_insert_dropped_events_writes_rows():
+    fake_cursor = FakeCursor()
+    connection = FakeConnection(fake_cursor)
+
+    inserted = insert_dropped_events(
+        connection,
+        rows=[
+            {
+                "ingestion_run_id": uuid4(),
+                "source": "gdelt_events_v2",
+                "export_time_utc": datetime(2026, 3, 15, 0, 15, tzinfo=timezone.utc),
+                "export_url": "https://data.gdeltproject.org/gdeltv2/20260315001500.export.CSV.zip",
+                "dedupe_key": "dedupe-drop",
+                "drop_reason": "validation_drop",
+                "error_detail": "time_future_outlier",
+                "quality_flags": ["time_future_outlier"],
+                "raw_payload": {"EventCode": "190"},
+            }
+        ],
+    )
+
+    assert inserted == 1
+    dropped_insert_count = sum(1 for query, _ in fake_cursor.executed if "INSERT INTO dropped_events" in query)
+    assert dropped_insert_count == 1
+
+
+def test_advisory_lock_helpers_read_boolean_fields():
+    fake_cursor = FakeCursor(advisory_acquired=True, advisory_released=True)
+    connection = FakeConnection(fake_cursor)
+
+    assert try_acquire_ingestion_lock(connection) is True
+    assert release_ingestion_lock(connection) is True

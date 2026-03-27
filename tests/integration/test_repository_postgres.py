@@ -16,11 +16,14 @@ except ImportError:  # pragma: no cover - optional dependency
 
 from src.ingestion.repository import (
     claim_checkpoint,
+    insert_dropped_events,
     insert_data_quality_audit,
     insert_checkpoint,
     insert_ingestion_run,
     insert_raw_and_normalized_batch,
     mark_checkpoint_completed,
+    release_ingestion_lock,
+    try_acquire_ingestion_lock,
     update_ingestion_run,
 )
 
@@ -47,6 +50,7 @@ def pg_connection():
             cursor.execute(_load_sql(root / "sql" / "stage1_schema.sql"))
             cursor.execute(_load_sql(root / "sql" / "stage2_schema.sql"))
             cursor.execute(_load_sql(root / "sql" / "stage5_country_mapping_and_quality.sql"))
+            cursor.execute(_load_sql(root / "sql" / "stage6_ingestion_observability.sql"))
 
     yield connection
     connection.close()
@@ -56,7 +60,9 @@ def pg_connection():
 def clean_tables(pg_connection):
     with pg_connection.transaction():
         with pg_connection.cursor() as cursor:
-            cursor.execute("TRUNCATE TABLE data_quality_audit, normalized_events, raw_events, gdelt_export_checkpoints, ingestion_runs RESTART IDENTITY CASCADE")
+            cursor.execute(
+                "TRUNCATE TABLE dropped_events, data_quality_audit, normalized_events, raw_events, gdelt_export_checkpoints, ingestion_runs RESTART IDENTITY CASCADE"
+            )
     yield
 
 
@@ -221,3 +227,50 @@ def test_insert_data_quality_audit_creates_row(pg_connection):
     assert float(audit_row["missing_actor_pct"]) == 4.0
     assert float(audit_row["missing_geo_pct"]) == 8.0
     assert float(audit_row["unknown_country_pct"]) == 12.0
+
+
+def test_insert_dropped_events_creates_audit_rows(pg_connection):
+    run_id = uuid4()
+    insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+
+    with pg_connection.transaction():
+        inserted = insert_dropped_events(
+            pg_connection,
+            rows=[
+                {
+                    "ingestion_run_id": run_id,
+                    "source": "gdelt_events_v2",
+                    "export_time_utc": datetime(2026, 3, 15, 0, 15, tzinfo=timezone.utc),
+                    "export_url": "https://data.gdeltproject.org/gdeltv2/20260315001500.export.CSV.zip",
+                    "dedupe_key": "dedupe-drop",
+                    "drop_reason": "validation_drop",
+                    "error_detail": "time_future_outlier",
+                    "quality_flags": ["time_future_outlier"],
+                    "raw_payload": {"EventCode": "190"},
+                }
+            ],
+        )
+
+    with pg_connection.cursor() as cursor:
+        cursor.execute("SELECT drop_reason, dedupe_key FROM dropped_events ORDER BY id DESC LIMIT 1")
+        dropped_row = cursor.fetchone()
+
+    assert inserted == 1
+    assert dropped_row["drop_reason"] == "validation_drop"
+    assert dropped_row["dedupe_key"] == "dedupe-drop"
+
+
+def test_advisory_lock_prevents_parallel_ingest(pg_connection):
+    database_url = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL") or pg_connection.info.dsn
+    try:
+        second_connection = psycopg.connect(database_url, row_factory=psycopg.rows.dict_row)
+    except psycopg.OperationalError:
+        pytest.skip("Could not open a second Postgres connection for advisory lock test.")
+    try:
+        assert try_acquire_ingestion_lock(pg_connection) is True
+        assert try_acquire_ingestion_lock(second_connection) is False
+        assert release_ingestion_lock(pg_connection) is True
+        assert try_acquire_ingestion_lock(second_connection) is True
+        assert release_ingestion_lock(second_connection) is True
+    finally:
+        second_connection.close()

@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
-from datetime import timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 from src.domain.events.categorization import categorize_event
@@ -11,6 +12,7 @@ from src.connectors.gdelt import fetch_latest_events
 from src.db import get_connection
 from src.ingestion.repository import (
     fetch_event_stats,
+    fetch_latest_successful_ingestion,
     fetch_recent_ingestion_runs,
     fetch_recent_normalized_events,
     fetch_spike_rows,
@@ -98,6 +100,7 @@ ROOT_EVENT_LABELS = {
 
 MAX_EVENTS_PER_CATEGORY = 3
 MAX_BREAKING_EVENTS = 5
+DEFAULT_READINESS_MAX_AGE_MINUTES = int(os.getenv("INGEST_READINESS_MAX_AGE_MINUTES", "60"))
 
 MOMENTUM_SQL = """
 WITH events AS (
@@ -283,6 +286,57 @@ def get_tension_payload(hours: int) -> dict[str, object]:
     return {
         "hours": safe_hours,
         "rows": rows,
+    }
+
+
+def get_readiness_payload(max_age_minutes: int | None = None) -> dict[str, object]:
+    safe_max_age_minutes = max(int(max_age_minutes or DEFAULT_READINESS_MAX_AGE_MINUTES), 1)
+    now_utc = datetime.now(timezone.utc)
+
+    try:
+        with get_connection() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1 AS ok")
+                cursor.fetchone()
+            latest_completed_run = fetch_latest_successful_ingestion(connection)
+    except Exception as exc:
+        return {
+            "ready": False,
+            "reason": "database_unavailable",
+            "max_age_minutes": safe_max_age_minutes,
+            "detail": str(exc),
+        }
+
+    if latest_completed_run is None:
+        return {
+            "ready": False,
+            "reason": "no_successful_ingest",
+            "max_age_minutes": safe_max_age_minutes,
+            "latest_successful_finished_at": None,
+            "latest_successful_run_id": None,
+        }
+
+    finished_at = latest_completed_run.get("finished_at")
+    if not hasattr(finished_at, "astimezone"):
+        return {
+            "ready": False,
+            "reason": "invalid_finished_at",
+            "max_age_minutes": safe_max_age_minutes,
+            "latest_successful_finished_at": None,
+            "latest_successful_run_id": str(latest_completed_run.get("id")),
+        }
+
+    finished_at_utc = finished_at.astimezone(timezone.utc)
+    age_seconds = max(int((now_utc - finished_at_utc).total_seconds()), 0)
+    is_ready = age_seconds <= safe_max_age_minutes * 60
+
+    return {
+        "ready": is_ready,
+        "reason": "ok" if is_ready else "stale_ingest",
+        "max_age_minutes": safe_max_age_minutes,
+        "latest_successful_finished_at": finished_at_utc.isoformat(),
+        "latest_successful_run_id": str(latest_completed_run.get("id")),
+        "ingest_age_seconds": age_seconds,
     }
 
 

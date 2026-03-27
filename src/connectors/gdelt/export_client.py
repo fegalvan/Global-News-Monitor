@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import tempfile
 import re
+import tempfile
+from collections.abc import Callable
 from typing import Any, Iterator
 
 import requests
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from src.connectors.gdelt.export_parser import (
     read_zip_csv_rows,
@@ -17,12 +18,12 @@ from src.connectors.gdelt.export_parser import (
 
 # this file tells us where the newest gdelt data dump is
 LAST_UPDATE_URL = "https://data.gdeltproject.org/gdeltv2/lastupdate.txt"
-LAST_UPDATE_URL_HTTP_FALLBACK = "http://data.gdeltproject.org/gdeltv2/lastupdate.txt"
 DEFAULT_TIMEOUT = 60
 DOWNLOAD_CHUNK_BYTES = 1024 * 256
 SPOOL_MAX_MEMORY_BYTES = 1024 * 1024 * 8
 USER_AGENT = "Global-News-Monitor/1.0"
 CSV_URL_PATTERN = re.compile(r"https?://\S+?\.export\.CSV\.zip")
+RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
 
 _retry_metrics = {
     "metadata_retries": 0,
@@ -47,6 +48,27 @@ def _on_download_retry(retry_state: Any) -> None:
     _retry_metrics["download_retries"] += 1
 
 
+def _is_retryable_exception(exception: BaseException) -> bool:
+    if isinstance(
+        exception,
+        (
+            requests.exceptions.ConnectTimeout,
+            requests.exceptions.ReadTimeout,
+            requests.exceptions.ConnectionError,
+        ),
+    ):
+        return True
+
+    if isinstance(exception, requests.exceptions.HTTPError):
+        response = getattr(exception, "response", None)
+        status_code = getattr(response, "status_code", None)
+        if status_code is None:
+            return False
+        return status_code in RETRYABLE_HTTP_STATUS_CODES
+
+    return False
+
+
 def get_retry_metrics() -> dict[str, int]:
     return dict(_retry_metrics)
 
@@ -59,25 +81,17 @@ def reset_retry_metrics() -> None:
 @retry(
     stop=stop_after_attempt(4),
     wait=wait_exponential(multiplier=1, min=1, max=8),
-    retry=retry_if_exception_type((requests.exceptions.RequestException, ValueError)),
+    retry=retry_if_exception(_is_retryable_exception),
     before_sleep=_on_metadata_retry,
     reraise=True,
 )
 def _get_export_zip_url(session: requests.Session) -> str:
     # retry because gdelt sometimes 429s or just has a weird moment
-    try:
-        response = session.get(
-            LAST_UPDATE_URL,
-            headers={"User-Agent": USER_AGENT},
-            timeout=DEFAULT_TIMEOUT,
-        )
-    except requests.exceptions.SSLError:
-        # https is preferred, but we keep this fallback so ingest still works where cert validation breaks
-        response = session.get(
-            LAST_UPDATE_URL_HTTP_FALLBACK,
-            headers={"User-Agent": USER_AGENT},
-            timeout=DEFAULT_TIMEOUT,
-        )
+    response = session.get(
+        LAST_UPDATE_URL,
+        headers={"User-Agent": USER_AGENT},
+        timeout=DEFAULT_TIMEOUT,
+    )
     response.raise_for_status()
 
     match = CSV_URL_PATTERN.search(response.text)
@@ -102,7 +116,7 @@ def get_latest_export_metadata(
 @retry(
     stop=stop_after_attempt(4),
     wait=wait_exponential(multiplier=1, min=1, max=8),
-    retry=retry_if_exception_type((requests.exceptions.RequestException, ValueError)),
+    retry=retry_if_exception(_is_retryable_exception),
     before_sleep=_on_download_retry,
     reraise=True,
 )
@@ -128,7 +142,7 @@ def download_export_zip(
 @retry(
     stop=stop_after_attempt(4),
     wait=wait_exponential(multiplier=1, min=1, max=8),
-    retry=retry_if_exception_type((requests.exceptions.RequestException, ValueError)),
+    retry=retry_if_exception(_is_retryable_exception),
     before_sleep=_on_download_retry,
     reraise=True,
 )
@@ -176,10 +190,12 @@ def fetch_export_rows(
 def iter_export_rows(
     export_url: str,
     session: requests.Session | None = None,
+    *,
+    on_parse_error: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> Iterator[dict[str, Any]]:
     spool = download_export_zip_to_spool(export_url, session=session)
     try:
-        yield from iter_zip_csv_rows(spool)
+        yield from iter_zip_csv_rows(spool, on_parse_error=on_parse_error)
     finally:
         spool.close()
 

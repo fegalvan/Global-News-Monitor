@@ -69,6 +69,8 @@ ORDER BY z_score DESC NULLS LAST, lift_ratio DESC
 LIMIT 50
 """
 
+INGEST_ADVISORY_LOCK_KEY = 7042026
+
 TENSION_SQL = """
 WITH events AS (
     SELECT
@@ -325,7 +327,7 @@ def insert_raw_and_normalized_batch(
             raw_params: list[Any] = []
             for event in chunk:
                 raw_placeholders.append(
-                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb)"
+                    "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)"
                 )
                 raw_params.extend(
                     [
@@ -346,6 +348,7 @@ def insert_raw_and_normalized_batch(
                         event.get("action_geo_long"),
                         event.get("avg_tone"),
                         json.dumps(event["raw_payload"]),
+                        json.dumps(event.get("validation_flags", [])),
                     ]
                 )
 
@@ -368,7 +371,8 @@ def insert_raw_and_normalized_batch(
                     action_geo_lat,
                     action_geo_long,
                     avg_tone,
-                    raw_payload
+                    raw_payload,
+                    validation_flags
                 )
                 VALUES {", ".join(raw_placeholders)}
                 ON CONFLICT (source, dedupe_key) DO NOTHING
@@ -446,6 +450,87 @@ def insert_raw_and_normalized_batch(
     return (inserted_raw_count, inserted_normalized_count)
 
 
+def insert_dropped_events(
+    connection: psycopg.Connection,
+    rows: Sequence[dict[str, Any]],
+    batch_size: int = 500,
+) -> int:
+    """Persist dropped/invalid rows for observability and debugging."""
+
+    if not rows:
+        return 0
+
+    inserted_count = 0
+    safe_batch_size = max(int(batch_size), 1)
+
+    with connection.cursor() as cursor:
+        for start in range(0, len(rows), safe_batch_size):
+            chunk = rows[start : start + safe_batch_size]
+            placeholders = []
+            params: list[Any] = []
+
+            for row in chunk:
+                placeholders.append(
+                    "(%s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s::jsonb)"
+                )
+                params.extend(
+                    [
+                        row["ingestion_run_id"],
+                        row["source"],
+                        row["export_time_utc"],
+                        row["export_url"],
+                        row.get("dedupe_key"),
+                        row["drop_reason"],
+                        row.get("error_detail"),
+                        json.dumps(row.get("quality_flags", [])),
+                        json.dumps(row.get("raw_payload", {})),
+                    ]
+                )
+
+            query = f"""
+                INSERT INTO dropped_events (
+                    ingestion_run_id,
+                    source,
+                    export_time_utc,
+                    export_url,
+                    dedupe_key,
+                    drop_reason,
+                    error_detail,
+                    quality_flags,
+                    raw_payload
+                )
+                VALUES {", ".join(placeholders)}
+            """
+            cursor.execute(query, params)
+            inserted_count += cursor.rowcount if cursor.rowcount is not None else len(chunk)
+
+    return inserted_count
+
+
+def try_acquire_ingestion_lock(
+    connection: psycopg.Connection,
+    lock_key: int = INGEST_ADVISORY_LOCK_KEY,
+) -> bool:
+    """Acquire a session-level advisory lock for singleton ingestion."""
+
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_try_advisory_lock(%s) AS acquired", (lock_key,))
+        row = cursor.fetchone() or {}
+        return bool(row.get("acquired"))
+
+
+def release_ingestion_lock(
+    connection: psycopg.Connection,
+    lock_key: int = INGEST_ADVISORY_LOCK_KEY,
+) -> bool:
+    """Release the singleton ingestion advisory lock."""
+
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_advisory_unlock(%s) AS released", (lock_key,))
+        row = cursor.fetchone() or {}
+        return bool(row.get("released"))
+
+
 def fetch_recent_normalized_events(
     connection: psycopg.Connection,
     limit: int = 20,
@@ -506,6 +591,30 @@ def fetch_recent_ingestion_runs(
             (safe_limit,),
         )
         return list(cursor.fetchall())
+
+
+def fetch_latest_successful_ingestion(
+    connection: psycopg.Connection,
+) -> dict[str, Any] | None:
+    """Fetch the latest completed ingestion run for readiness checks."""
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                id,
+                started_at,
+                finished_at,
+                events_inserted,
+                events_duplicated
+            FROM ingestion_runs
+            WHERE status = 'completed'
+              AND finished_at IS NOT NULL
+            ORDER BY finished_at DESC
+            LIMIT 1
+            """
+        )
+        return cursor.fetchone()
 
 
 def fetch_event_stats(

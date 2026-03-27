@@ -1,3 +1,7 @@
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
+
+
 def test_import_src_main():
     # This test verifies that src.main imports successfully and that the
     # application module loads without crashing because of syntax errors,
@@ -69,3 +73,85 @@ def test_build_arg_parser_parses_latest_limit():
 
     assert args.command == "latest"
     assert args.limit == 7
+
+
+def test_get_readiness_payload_reports_ready_for_recent_successful_ingest(monkeypatch):
+    from src.main import get_readiness_payload
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query):
+            return None
+
+        def fetchone(self):
+            return {"ok": 1}
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+    monkeypatch.setattr("src.main.get_connection", lambda: FakeConnection())
+    monkeypatch.setattr(
+        "src.main.fetch_latest_successful_ingestion",
+        lambda connection: {
+            "id": uuid4(),
+            "finished_at": datetime.now(timezone.utc) - timedelta(minutes=5),
+        },
+    )
+
+    payload = get_readiness_payload(max_age_minutes=60)
+
+    assert payload["ready"] is True
+    assert payload["reason"] == "ok"
+
+
+def test_get_readiness_payload_reports_not_ready_for_stale_ingest(monkeypatch):
+    from src.main import get_readiness_payload
+
+    class FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query):
+            return None
+
+        def fetchone(self):
+            return {"ok": 1}
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def cursor(self):
+            return FakeCursor()
+
+    monkeypatch.setattr("src.main.get_connection", lambda: FakeConnection())
+    monkeypatch.setattr(
+        "src.main.fetch_latest_successful_ingestion",
+        lambda connection: {
+            "id": uuid4(),
+            "finished_at": datetime.now(timezone.utc) - timedelta(hours=4),
+        },
+    )
+
+    payload = get_readiness_payload(max_age_minutes=30)
+
+    assert payload["ready"] is False
+    assert payload["reason"] == "stale_ingest"

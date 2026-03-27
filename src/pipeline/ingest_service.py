@@ -5,7 +5,7 @@ import os
 import time
 from datetime import timedelta
 from itertools import islice
-from typing import Iterable, Iterator
+from typing import Any, Iterable, Iterator
 from uuid import uuid4
 
 from src.connectors.gdelt import (
@@ -18,7 +18,11 @@ from src.connectors.gdelt import (
 from src.db import get_connection, transaction
 from src.pipeline.data_quality import summarize_batch_quality
 from src.ingestion.repository import (
+    INGEST_ADVISORY_LOCK_KEY,
+    try_acquire_ingestion_lock,
+    release_ingestion_lock,
     claim_checkpoint,
+    insert_dropped_events,
     insert_data_quality_audit,
     insert_ingestion_run,
     insert_checkpoint,
@@ -63,6 +67,7 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
     run_id = uuid4()
     export_metadata = parse_export_metadata(export_url)
     connection = get_connection()
+    lock_acquired = False
     run_record_created = False
     checkpoint_source = SOURCE
     export_time_utc = export_metadata["export_time_utc"]
@@ -71,6 +76,21 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
     reset_retry_metrics()
 
     try:
+        lock_acquired = try_acquire_ingestion_lock(connection, lock_key=INGEST_ADVISORY_LOCK_KEY)
+        if not lock_acquired:
+            logger.info(
+                "ingestion_lock_not_acquired lock_key=%s export_filename=%s",
+                INGEST_ADVISORY_LOCK_KEY,
+                export_filename,
+            )
+            return {
+                "run_id": str(run_id),
+                "status": "skipped_locked",
+                "rows_seen": 0,
+                "rows_inserted": 0,
+                "rows_duplicated": 0,
+            }
+
         with transaction(connection):
             insert_ingestion_run(
                 connection=connection,
@@ -184,10 +204,50 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
         missing_actor_count = 0
         missing_geo_count = 0
         unknown_country_count = 0
+        parse_error_count = 0
+        persisted_dropped_row_count = 0
         category_counts: dict[str, int] = {}
+        validation_flag_counts: dict[str, int] = {}
+        dropped_events_buffer: list[dict[str, Any]] = []
+
+        def _record_dropped_event(
+            *,
+            drop_reason: str,
+            error_detail: str | None,
+            quality_flags: list[str],
+            raw_payload: dict[str, Any],
+            dedupe_key: str | None = None,
+        ) -> None:
+            dropped_events_buffer.append(
+                {
+                    "ingestion_run_id": run_id,
+                    "source": checkpoint_source,
+                    "export_time_utc": export_time_utc,
+                    "export_url": export_url,
+                    "dedupe_key": dedupe_key,
+                    "drop_reason": drop_reason,
+                    "error_detail": error_detail,
+                    "quality_flags": quality_flags,
+                    "raw_payload": raw_payload,
+                }
+            )
+
+        def _on_parse_error(reason: str, context: dict[str, Any]) -> None:
+            nonlocal parse_error_count
+            parse_error_count += 1
+            error_detail = (
+                f"reason={reason} row_number={context.get('row_number')} "
+                f"row_length={context.get('row_length')}"
+            )
+            _record_dropped_event(
+                drop_reason="parse_error",
+                error_detail=error_detail,
+                quality_flags=[reason],
+                raw_payload={"parser_context": context},
+            )
 
         # this is where we stream the gdelt export rows and process them in chunks
-        export_rows = iter_export_rows(export_url)
+        export_rows = iter_export_rows(export_url, on_parse_error=_on_parse_error)
         for chunk in _iter_chunks(export_rows, BATCH_SIZE):
             raw_row_count += len(chunk)
             normalized_events = []
@@ -198,10 +258,20 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
                     export_url=export_url,
                     ingestion_run_id=run_id,
                 )
-                cleaned_event, _, drop = validate_and_clean_event(normalized_event, export_time_utc)
+                cleaned_event, flags, drop = validate_and_clean_event(normalized_event, export_time_utc)
+                for flag in flags:
+                    validation_flag_counts[flag] = validation_flag_counts.get(flag, 0) + 1
                 if drop:
                     dropped_row_count += 1
+                    _record_dropped_event(
+                        drop_reason="validation_drop",
+                        error_detail=", ".join(flags) if flags else "validation_drop",
+                        quality_flags=flags,
+                        raw_payload=normalized_event["raw_payload"],
+                        dedupe_key=normalized_event.get("dedupe_key"),
+                    )
                     continue
+                cleaned_event["validation_flags"] = flags
                 normalized_events.append(cleaned_event)
 
             quality = summarize_batch_quality(normalized_events)
@@ -218,15 +288,37 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
                 raw_row_count,
             )
 
-            with transaction(connection):
-                inserted_raw_chunk, inserted_normalized_chunk = insert_raw_and_normalized_batch(
-                    connection=connection,
-                    events=normalized_events,
-                    batch_size=BATCH_SIZE,
-                )
+            inserted_raw_chunk = 0
+            inserted_normalized_chunk = 0
+            inserted_dropped_chunk = 0
+            if normalized_events or dropped_events_buffer:
+                with transaction(connection):
+                    if normalized_events:
+                        inserted_raw_chunk, inserted_normalized_chunk = insert_raw_and_normalized_batch(
+                            connection=connection,
+                            events=normalized_events,
+                            batch_size=BATCH_SIZE,
+                        )
+                    if dropped_events_buffer:
+                        inserted_dropped_chunk = insert_dropped_events(
+                            connection=connection,
+                            rows=dropped_events_buffer,
+                            batch_size=BATCH_SIZE,
+                        )
+                        dropped_events_buffer.clear()
 
             inserted_row_count += inserted_raw_chunk
             inserted_normalized_count += inserted_normalized_chunk
+            persisted_dropped_row_count += inserted_dropped_chunk
+
+        if dropped_events_buffer:
+            with transaction(connection):
+                persisted_dropped_row_count += insert_dropped_events(
+                    connection=connection,
+                    rows=dropped_events_buffer,
+                    batch_size=BATCH_SIZE,
+                )
+                dropped_events_buffer.clear()
 
         duplicate_row_count = max(raw_row_count - inserted_row_count - dropped_row_count, 0)
 
@@ -275,6 +367,13 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             dropped_row_count,
         )
         logger.info(
+            "rows_rejected source=%s export_filename=%s parse_errors=%s dropped_rows_persisted=%s",
+            checkpoint_source,
+            export_filename,
+            parse_error_count,
+            persisted_dropped_row_count,
+        )
+        logger.info(
             "checkpoint_status_changed source=%s export_filename=%s new_status=completed",
             checkpoint_source,
             export_filename,
@@ -309,6 +408,18 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             unknown_country_percent,
             category_counts,
         )
+        if validation_flag_counts:
+            logger.info(
+                "[VALIDATION FLAGS] distribution=%s",
+                validation_flag_counts,
+            )
+        if parse_error_count:
+            logger.warning(
+                "parse_error_warning source=%s export_filename=%s parse_error_count=%s",
+                checkpoint_source,
+                export_filename,
+                parse_error_count,
+            )
         if missing_actor_percent > 35:
             logger.warning(
                 "data_quality_warning reason=high_missing_actor_percent value=%.2f threshold=35",
@@ -331,6 +442,8 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             "rows_seen": raw_row_count,
             "rows_inserted": inserted_row_count,
             "rows_duplicated": duplicate_row_count,
+            "rows_dropped": dropped_row_count,
+            "parse_errors": parse_error_count,
         }
     except Exception as exc:
         if run_record_created:
@@ -356,4 +469,13 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             )
         raise
     finally:
+        if lock_acquired:
+            try:
+                release_ingestion_lock(connection, lock_key=INGEST_ADVISORY_LOCK_KEY)
+            except Exception:
+                logger.exception(
+                    "ingestion_lock_release_failed lock_key=%s run_id=%s",
+                    INGEST_ADVISORY_LOCK_KEY,
+                    run_id,
+                )
         connection.close()
