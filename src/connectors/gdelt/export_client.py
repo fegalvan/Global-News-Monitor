@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 from collections.abc import Callable
 from typing import Any, Iterator
+from urllib.parse import urlparse
 
 import requests
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
@@ -17,13 +19,18 @@ from src.connectors.gdelt.export_parser import (
 )
 
 # this file tells us where the newest gdelt data dump is
-LAST_UPDATE_URL = "https://data.gdeltproject.org/gdeltv2/lastupdate.txt"
+LAST_UPDATE_URL = os.getenv(
+    "GDELT_LAST_UPDATE_URL",
+    "https://storage.googleapis.com/data.gdeltproject.org/gdeltv2/lastupdate.txt",
+)
 DEFAULT_TIMEOUT = 60
 DOWNLOAD_CHUNK_BYTES = 1024 * 256
 SPOOL_MAX_MEMORY_BYTES = 1024 * 1024 * 8
 USER_AGENT = "Global-News-Monitor/1.0"
 CSV_URL_PATTERN = re.compile(r"https?://\S+?\.export\.CSV\.zip")
 RETRYABLE_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
+DATA_GDELT_HOST = "data.gdeltproject.org"
+GCS_GDELT_PREFIX = "https://storage.googleapis.com/data.gdeltproject.org"
 
 _retry_metrics = {
     "metadata_retries": 0,
@@ -69,6 +76,15 @@ def _is_retryable_exception(exception: BaseException) -> bool:
     return False
 
 
+def _normalize_export_url(export_url: str) -> str:
+    parsed = urlparse(export_url)
+    if parsed.netloc.lower() != DATA_GDELT_HOST:
+        return export_url
+
+    normalized_path = parsed.path if parsed.path.startswith("/") else f"/{parsed.path}"
+    return f"{GCS_GDELT_PREFIX}{normalized_path}"
+
+
 def get_retry_metrics() -> dict[str, int]:
     return dict(_retry_metrics)
 
@@ -98,7 +114,7 @@ def _get_export_zip_url(session: requests.Session) -> str:
     if not match:
         raise ValueError("could not find an export csv zip url in lastupdate.txt")
 
-    return match.group(0)
+    return _normalize_export_url(match.group(0))
 
 
 def get_latest_export_metadata(

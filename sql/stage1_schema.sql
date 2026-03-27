@@ -72,3 +72,10 @@ CREATE INDEX IF NOT EXISTS idx_gdelt_export_checkpoints_status_started
 
 CREATE INDEX IF NOT EXISTS idx_gdelt_export_checkpoints_status_time
     ON gdelt_export_checkpoints (status, export_time_utc);
+
+-- idempotency-critical uniqueness (also protects legacy DBs where table existed first)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_gdelt_export_checkpoint
+    ON gdelt_export_checkpoints (source, export_time_utc);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_raw_events_source_dedupe
+    ON raw_events (source, dedupe_key);

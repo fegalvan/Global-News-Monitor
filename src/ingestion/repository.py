@@ -191,6 +191,17 @@ def insert_checkpoint(
             SELECT *
             FROM gdelt_export_checkpoints
             WHERE source = %s AND export_time_utc = %s
+            ORDER BY
+                CASE status
+                    WHEN 'completed' THEN 0
+                    WHEN 'processing' THEN 1
+                    WHEN 'failed' THEN 2
+                    ELSE 3
+                END,
+                completed_at DESC NULLS LAST,
+                discovered_at DESC,
+                id DESC
+            LIMIT 1
             """,
             (source, export_time_utc),
         )

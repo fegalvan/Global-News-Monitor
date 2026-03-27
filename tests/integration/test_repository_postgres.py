@@ -51,6 +51,7 @@ def pg_connection():
             cursor.execute(_load_sql(root / "sql" / "stage2_schema.sql"))
             cursor.execute(_load_sql(root / "sql" / "stage5_country_mapping_and_quality.sql"))
             cursor.execute(_load_sql(root / "sql" / "stage6_ingestion_observability.sql"))
+            cursor.execute(_load_sql(root / "sql" / "stage7_idempotency_hardening.sql"))
 
     yield connection
     connection.close()

@@ -34,7 +34,15 @@ def load_database_url() -> str:
 def get_connection() -> psycopg.Connection:
     """Create a PostgreSQL connection for the current process."""
 
-    return psycopg.connect(load_database_url(), row_factory=dict_row)
+    # autocommit=True is important here because we manage explicit transaction
+    # boundaries with connection.transaction(). Without autocommit, psycopg
+    # keeps an outer implicit transaction open and closing the connection can
+    # roll back all writes.
+    return psycopg.connect(
+        load_database_url(),
+        row_factory=dict_row,
+        autocommit=True,
+    )
 
 
 @contextmanager

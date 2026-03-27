@@ -175,7 +175,9 @@ def test_insert_checkpoint_query_is_idempotent():
 
     assert checkpoint["status"] == "pending"
     insert_query = fake_cursor.executed[0][0]
+    select_query = fake_cursor.executed[1][0]
     assert "ON CONFLICT (source, export_time_utc) DO NOTHING" in insert_query
+    assert "ORDER BY" in select_query
 
 
 def test_reset_stale_processing_checkpoints_returns_updated_rows():

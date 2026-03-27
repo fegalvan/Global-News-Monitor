@@ -1,7 +1,12 @@
 import pytest
 import requests
 
-from src.connectors.gdelt.export_client import _get_export_zip_url, _is_retryable_exception
+from src.connectors.gdelt.export_client import (
+    LAST_UPDATE_URL,
+    _get_export_zip_url,
+    _is_retryable_exception,
+    _normalize_export_url,
+)
 
 
 def _http_error(status_code: int) -> requests.exceptions.HTTPError:
@@ -32,4 +37,11 @@ def test_export_metadata_fetch_does_not_fallback_to_http():
     with pytest.raises(requests.exceptions.SSLError):
         _get_export_zip_url.__wrapped__(FakeSession())
 
-    assert called_urls == ["https://data.gdeltproject.org/gdeltv2/lastupdate.txt"]
+    assert called_urls == [LAST_UPDATE_URL]
+
+
+def test_export_url_is_normalized_to_storage_googleapis():
+    raw = "http://data.gdeltproject.org/gdeltv2/20260327000000.export.CSV.zip"
+    normalized = _normalize_export_url(raw)
+
+    assert normalized == "https://storage.googleapis.com/data.gdeltproject.org/gdeltv2/20260327000000.export.CSV.zip"
