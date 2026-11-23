@@ -321,8 +321,18 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
                 dropped_events_buffer.clear()
 
         duplicate_row_count = max(raw_row_count - inserted_row_count - dropped_row_count, 0)
+        missing_actor_percent = (missing_actor_count / raw_row_count * 100) if raw_row_count else 0.0
+        missing_geo_percent = (missing_geo_count / raw_row_count * 100) if raw_row_count else 0.0
+        unknown_country_percent = (unknown_country_count / raw_row_count * 100) if raw_row_count else 0.0
 
         with transaction(connection):
+            insert_data_quality_audit(
+                connection=connection,
+                total_events=raw_row_count,
+                missing_actor_pct=missing_actor_percent,
+                missing_geo_pct=missing_geo_percent,
+                unknown_country_pct=unknown_country_percent,
+            )
             mark_checkpoint_completed(
                 connection=connection,
                 source=checkpoint_source,
@@ -382,17 +392,6 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
         elapsed_seconds = max(time.perf_counter() - ingest_started_monotonic, 0.001)
         rate = raw_row_count / elapsed_seconds
         export_lag_seconds = max(int((time.time() - export_time_utc.timestamp())), 0)
-        missing_actor_percent = (missing_actor_count / raw_row_count * 100) if raw_row_count else 0.0
-        missing_geo_percent = (missing_geo_count / raw_row_count * 100) if raw_row_count else 0.0
-        unknown_country_percent = (unknown_country_count / raw_row_count * 100) if raw_row_count else 0.0
-        with transaction(connection):
-            insert_data_quality_audit(
-                connection=connection,
-                total_events=raw_row_count,
-                missing_actor_pct=missing_actor_percent,
-                missing_geo_pct=missing_geo_percent,
-                unknown_country_pct=unknown_country_percent,
-            )
         logger.info(
             "[INGEST METRICS] events_processed=%s rows_inserted=%s rate=%.2f events/sec retries=%s export_lag_seconds=%s",
             raw_row_count,

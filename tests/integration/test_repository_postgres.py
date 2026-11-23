@@ -8,6 +8,8 @@ import os
 
 import psycopg
 import pytest
+from alembic import command
+from alembic.config import Config
 
 try:
     from dotenv import load_dotenv
@@ -16,6 +18,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 from src.ingestion.repository import (
     claim_checkpoint,
+    fetch_latest_successful_ingestion,
     insert_dropped_events,
     insert_data_quality_audit,
     insert_checkpoint,
@@ -28,43 +31,73 @@ from src.ingestion.repository import (
 )
 
 
-def _load_sql(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
-
-
 @pytest.fixture(scope="session")
 def pg_connection():
     root = Path(__file__).resolve().parents[2]
     if load_dotenv is not None:
         load_dotenv(root / ".env")
 
-    database_url = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL")
+    database_url = os.getenv("TEST_DATABASE_URL")
     if not database_url:
-        pytest.skip("Set TEST_DATABASE_URL or DATABASE_URL for Postgres integration tests.")
+        pytest.skip("Set TEST_DATABASE_URL to a dedicated Postgres integration database.")
 
-    connection = psycopg.connect(database_url, row_factory=psycopg.rows.dict_row)
+    config = Config(str(root / "alembic.ini"))
+    config.attributes["database_url"] = database_url
+    command.upgrade(config, "head")
 
-    with connection.transaction():
-        # we apply schemas directly so integration tests validate real repository SQL
-        with connection.cursor() as cursor:
-            cursor.execute(_load_sql(root / "sql" / "stage1_schema.sql"))
-            cursor.execute(_load_sql(root / "sql" / "stage2_schema.sql"))
-            cursor.execute(_load_sql(root / "sql" / "stage5_country_mapping_and_quality.sql"))
-            cursor.execute(_load_sql(root / "sql" / "stage6_ingestion_observability.sql"))
-            cursor.execute(_load_sql(root / "sql" / "stage7_idempotency_hardening.sql"))
-
-    yield connection
-    connection.close()
+    with psycopg.connect(database_url, row_factory=psycopg.rows.dict_row, autocommit=True) as connection:
+        yield connection
 
 
 @pytest.fixture(autouse=True)
 def clean_tables(pg_connection):
-    with pg_connection.transaction():
+    with pg_connection.transaction(force_rollback=True):
         with pg_connection.cursor() as cursor:
             cursor.execute(
                 "TRUNCATE TABLE dropped_events, data_quality_audit, normalized_events, raw_events, gdelt_export_checkpoints, ingestion_runs RESTART IDENTITY CASCADE"
             )
-    yield
+        yield
+
+
+def test_migrations_reach_head(pg_connection):
+    with pg_connection.cursor() as cursor:
+        cursor.execute("SELECT version_num FROM alembic_version")
+        assert cursor.fetchone()["version_num"] == "0007_idempotency_hardening"
+        cursor.execute(
+            """
+            SELECT character_maximum_length
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'alembic_version'
+              AND column_name = 'version_num'
+            """
+        )
+        length = cursor.fetchone()["character_maximum_length"]
+        assert length is None or length >= len("0005_country_mapping_and_quality_audit")
+
+
+def test_latest_successful_ingestion_ignores_skipped_exports(pg_connection):
+    assert fetch_latest_successful_ingestion(pg_connection) is None
+
+    successful_run_id = uuid4()
+    skipped_run_id = uuid4()
+    for run_id, exports_completed in ((successful_run_id, 1), (skipped_run_id, 0)):
+        insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+        update_ingestion_run(
+            pg_connection,
+            run_id=run_id,
+            status="completed",
+            exports_seen=1,
+            exports_completed=exports_completed,
+            finished=True,
+        )
+
+    pg_connection.execute(
+        "UPDATE ingestion_runs SET finished_at = NOW() - INTERVAL '1 hour' WHERE id = %s",
+        (successful_run_id,),
+    )
+
+    assert fetch_latest_successful_ingestion(pg_connection)["id"] == successful_run_id
 
 
 def _build_event(run_id, dedupe_key: str) -> dict:
@@ -262,16 +295,9 @@ def test_insert_dropped_events_creates_audit_rows(pg_connection):
 
 
 def test_advisory_lock_prevents_parallel_ingest(pg_connection):
-    database_url = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL") or pg_connection.info.dsn
-    try:
-        second_connection = psycopg.connect(database_url, row_factory=psycopg.rows.dict_row)
-    except psycopg.OperationalError:
-        pytest.skip("Could not open a second Postgres connection for advisory lock test.")
-    try:
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"], row_factory=psycopg.rows.dict_row) as second_connection:
         assert try_acquire_ingestion_lock(pg_connection) is True
         assert try_acquire_ingestion_lock(second_connection) is False
         assert release_ingestion_lock(pg_connection) is True
         assert try_acquire_ingestion_lock(second_connection) is True
         assert release_ingestion_lock(second_connection) is True
-    finally:
-        second_connection.close()

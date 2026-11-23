@@ -620,6 +620,7 @@ def fetch_latest_successful_ingestion(
                 events_duplicated
             FROM ingestion_runs
             WHERE status = 'completed'
+              AND exports_completed > 0
               AND finished_at IS NOT NULL
             ORDER BY finished_at DESC
             LIMIT 1

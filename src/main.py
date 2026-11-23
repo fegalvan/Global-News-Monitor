@@ -299,12 +299,12 @@ def get_readiness_payload(max_age_minutes: int | None = None) -> dict[str, objec
                 cursor.execute("SELECT 1 AS ok")
                 cursor.fetchone()
             latest_completed_run = fetch_latest_successful_ingestion(connection)
-    except Exception as exc:
+    except Exception:
+        logging.getLogger(__name__).exception("Readiness database check failed")
         return {
             "ready": False,
             "reason": "database_unavailable",
             "max_age_minutes": safe_max_age_minutes,
-            "detail": str(exc),
         }
 
     if latest_completed_run is None:
