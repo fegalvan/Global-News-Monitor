@@ -4,41 +4,33 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 import psycopg
 
+from src.ingestion.dashboard_queries import EventFilters
+
 SPIKES_SQL = """
-WITH events AS (
+WITH recent AS (
     SELECT
-        event_time_utc AS event_time,
         primary_category AS category,
         country_name,
-        goldstein_score AS tone,
-        actor1_name AS actor1,
-        actor2_name AS actor2
-    FROM normalized_events
-),
-recent AS (
-    SELECT
-        category,
-        country_name,
         COUNT(*) AS recent_count
-    FROM events
-    WHERE event_time >= NOW() - make_interval(hours => %s)
+    FROM normalized_events
+    WHERE {recent}
     GROUP BY 1, 2
 ),
 baseline_daily AS (
     SELECT
-        category,
+        primary_category AS category,
         country_name,
-        date_trunc('day', event_time) AS day_bucket,
+        date_trunc('day', event_time_utc AT TIME ZONE 'UTC') AS day_bucket,
         COUNT(*) AS daily_count
-    FROM events
-    WHERE event_time >= NOW() - INTERVAL '15 days'
-      AND event_time < NOW() - make_interval(hours => %s)
+    FROM normalized_events
+    WHERE {baseline}
     GROUP BY 1, 2, 3
 ),
 baseline_stats AS (
@@ -72,26 +64,16 @@ LIMIT 50
 INGEST_ADVISORY_LOCK_KEY = 7042026
 
 TENSION_SQL = """
-WITH events AS (
-    SELECT
-        event_time_utc AS event_time,
-        primary_category AS category,
-        goldstein_score AS tone,
-        actor1_name AS actor1,
-        actor2_name AS actor2
-    FROM normalized_events
-)
 SELECT
-    COALESCE(actor1, 'Unknown') AS actor1,
-    COALESCE(actor2, 'Unknown') AS actor2,
-    category,
+    COALESCE(actor1_name, 'Unknown') AS actor1,
+    COALESCE(actor2_name, 'Unknown') AS actor2,
+    primary_category AS category,
     COUNT(*) AS event_count,
-    ROUND(AVG(tone)::numeric, 2) AS avg_tone,
-    MIN(tone) AS worst_tone
-FROM events
-WHERE event_time >= NOW() - make_interval(hours => %s)
-  AND tone IS NOT NULL
-  AND tone <= -5
+    ROUND(AVG(goldstein_score), 2) AS avg_tone,
+    MIN(goldstein_score) AS worst_tone
+FROM normalized_events
+WHERE {recent}
+  AND goldstein_score <= -5
 GROUP BY 1, 2, 3
 HAVING COUNT(*) >= 3
 ORDER BY avg_tone ASC, event_count DESC
@@ -748,24 +730,41 @@ def fetch_event_stats(
 def fetch_spike_rows(
     connection: psycopg.Connection,
     hours: int = 24,
+    *,
+    filters: EventFilters | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch category-country spike candidates for a recent window."""
 
-    safe_hours = max(int(hours), 1)
+    if filters is None:
+        safe_hours = max(int(hours), 1)
+        recent = "event_time_utc >= NOW() - make_interval(hours => %s)"
+        baseline = "event_time_utc >= NOW() - INTERVAL '15 days' AND event_time_utc < NOW() - make_interval(hours => %s)"
+        params = (safe_hours, safe_hours)
+    else:
+        recent, params = filters.where()
+        baseline_window = replace(filters, start=filters.end - timedelta(days=15), end=filters.start)
+        baseline, baseline_params = baseline_window.where()
+        params += baseline_params
     with connection.cursor() as cursor:
-        cursor.execute(SPIKES_SQL, (safe_hours, safe_hours))
+        cursor.execute(SPIKES_SQL.format(recent=recent, baseline=baseline), params)
         return list(cursor.fetchall())
 
 
 def fetch_tension_rows(
     connection: psycopg.Connection,
     hours: int = 48,
+    *,
+    filters: EventFilters | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch high-tension actor interactions for a recent window."""
 
-    safe_hours = max(int(hours), 1)
+    if filters is None:
+        recent = "event_time_utc >= NOW() - make_interval(hours => %s)"
+        params = (max(int(hours), 1),)
+    else:
+        recent, params = filters.where()
     with connection.cursor() as cursor:
-        cursor.execute(TENSION_SQL, (safe_hours,))
+        cursor.execute(TENSION_SQL.format(recent=recent), params)
         return list(cursor.fetchall())
 
 

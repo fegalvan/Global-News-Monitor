@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -10,7 +11,9 @@ import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
+from fastapi.testclient import TestClient
 
+from src.api.main import app
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - optional dependency
@@ -29,6 +32,7 @@ from src.ingestion.repository import (
     try_acquire_ingestion_lock,
     update_ingestion_run,
 )
+from src.ingestion.validation import validate_and_clean_event
 
 
 @pytest.fixture(scope="session")
@@ -126,6 +130,187 @@ def _build_event(run_id, dedupe_key: str) -> dict:
         "category_reason": "root_event_code:19",
         "raw_payload": {"EventCode": "190"},
     }
+
+
+@pytest.fixture
+def dashboard_client(pg_connection, monkeypatch):
+    for module in ("src.api.dashboard", "src.api.main", "src.main"):
+        monkeypatch.setattr(f"{module}.get_connection", lambda: nullcontext(pg_connection))
+    with TestClient(app) as client:
+        yield client
+
+
+@pytest.fixture
+def dashboard_window(pg_connection):
+    start = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    end = start + timedelta(hours=2)
+    run_id = uuid4()
+    insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+    common = _build_event(run_id, "unused")
+    rows = [
+        dict(common, dedupe_key="before", event_time_utc=start - timedelta(microseconds=1)),
+        dict(common, dedupe_key="start", event_time_utc=start),
+        dict(common, dedupe_key="tie-one", event_time_utc=start, action_geo_long=None),
+        dict(common, dedupe_key="tie-two", event_time_utc=start),
+        dict(common, dedupe_key="other-category", primary_category="politics", event_time_utc=start),
+        dict(common, dedupe_key="other-country", action_geo_country_code="CA", country_name="Canada",
+             action_geo_lat=90, action_geo_long=180, event_time_utc=start + timedelta(hours=1)),
+        dict(common, dedupe_key="end", event_time_utc=end),
+    ]
+    insert_raw_and_normalized_batch(pg_connection, rows)
+    # Use a non-UTC session to exercise UTC output and bucket semantics.
+    pg_connection.execute("SET LOCAL TIME ZONE 'America/New_York'")
+    return {"start": start.isoformat(), "end": end.isoformat()}
+
+
+def test_dashboard_events_filter_and_paginate(dashboard_client, dashboard_window):
+    filters = dict(dashboard_window, country="usa", category="conflict", limit=2)
+    first = dashboard_client.get("/events", params=filters)
+    assert first.status_code == 200, first.text
+    first = first.json()
+    assert first["filters"]["country"] == "USA"
+    assert len(first["rows"]) == 2
+    assert first["rows"][0]["event_label"] == "Fight"
+    assert first["rows"][0]["event_code"] == "190"
+    assert first["rows"][0]["original_event_code"] == "190"
+    assert first["rows"][0]["location_name"] == "Washington, DC"
+    assert first["rows"][0]["actor1_name"] == "POLICE"
+    assert first["rows"][0]["goldstein_score"] == -5
+    assert first["rows"][0]["category_confidence"] == 0.82
+    assert first["rows"][1]["latitude"] is None and first["rows"][1]["longitude"] is None
+    assert first["rows"][0]["event_time_utc"] == dashboard_window["start"]
+
+    second = dashboard_client.get("/events", params={**filters, **first["next_cursor"]}).json()
+    assert len(second["rows"]) == 1 and second["next_cursor"] is None
+    ids = [row["event_id"] for row in first["rows"] + second["rows"]]
+    assert ids == sorted(set(ids), reverse=True)
+
+    empty = dashboard_client.get("/events", params={**filters, "country": "GB"}).json()
+    assert empty["rows"] == [] and empty["next_cursor"] is None
+
+
+@pytest.mark.parametrize(
+    "path, params",
+    [
+        ("/events", {"limit": 0}),
+        ("/events", {"limit": 201}),
+        ("/events", {"before_id": 1}),
+        ("/events", {"country": "United States"}),
+        ("/events", {"category": "other"}),
+        ("/events", {"start": "2026-03-15T00:00:00"}),
+        ("/events", {"start": "1773532800"}),
+        ("/analytics", {"start": "2026-03-15"}),
+        ("/analytics", {"start": "2026-04-15T00:00:00Z"}),
+        ("/analytics", {"start": "2026-02-01T00:00:00Z"}),
+        ("/analytics", {"bucket": "week"}),
+    ],
+)
+def test_dashboard_rejects_invalid_queries(path, params):
+    with TestClient(app) as client:
+        response = client.get(
+            path, params={"start": "2026-03-15T00:00:00Z", "end": "2026-03-15T02:00:00Z", **params},
+        )
+    assert response.status_code == 422, response.text
+
+
+def test_dashboard_analytics_and_filtered_indicators(dashboard_client, dashboard_window):
+    response = dashboard_client.get("/analytics", params=dashboard_window)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["summary"] == {"total_events": 5, "geolocated_events": 4, "countries_with_events": 2}
+    assert [row["count"] for row in body["series"]] == [4, 1]
+    assert body["series"][0]["bucket_start"] == dashboard_window["start"]
+    assert [row["count"] for row in body["country_counts"]] == [4, 1]
+    assert body["category_counts"] == [
+        {"primary_category": "conflict", "count": 4}, {"primary_category": "politics", "count": 1},
+    ]
+    assert body["map"]["cells"] == [
+        {"latitude": 39, "longitude": -77, "count": 3},
+        {"latitude": 89, "longitude": 179, "count": 1},
+    ]
+
+    filtered = dict(dashboard_window, country="USA", category="conflict")
+    daily = dashboard_client.get("/analytics", params={**filtered, "bucket": "day"}).json()
+    assert daily["summary"]["total_events"] == 3
+    assert daily["series"] == [{"bucket_start": dashboard_window["start"], "count": 3}]
+    assert daily["map"]["cells"][0]["count"] == 2
+    assert dashboard_client.get("/spikes", params=filtered).json()["rows"] == []
+    tension = dashboard_client.get("/tension", params=filtered).json()
+    assert tension["rows"][0]["event_count"] == 3
+    assert tension["rows"][0]["avg_tone"] == -5
+    empty = dashboard_client.get("/analytics", params={**filtered, "country": "GB"}).json()
+    assert empty["summary"]["total_events"] == 0
+    assert empty["series"] == empty["country_counts"] == empty["category_counts"] == empty["map"]["cells"] == []
+
+
+def test_dashboard_excludes_invalid_source_coordinates(dashboard_client, pg_connection, dashboard_window):
+    run_id = pg_connection.execute("SELECT id FROM ingestion_runs").fetchone()["id"]
+    event = _build_event(run_id, "invalid-geo")
+    event.update(primary_category="crisis", action_geo_long=Decimal("181"))
+    cleaned, flags, drop = validate_and_clean_event(event, event["export_time_utc"])
+    assert not drop
+    cleaned["validation_flags"] = flags
+    insert_raw_and_normalized_batch(pg_connection, [cleaned])
+
+    params = dict(dashboard_window, category="crisis")
+    event_row, = dashboard_client.get("/events", params=params).json()["rows"]
+    assert event_row["latitude"] is None and event_row["longitude"] is None
+    assert "invalid_geo_range" in event_row["validation_flags"]
+    analytics = dashboard_client.get("/analytics", params=params).json()
+    assert analytics["summary"]["total_events"] == 1
+    assert analytics["summary"]["geolocated_events"] == 0
+    assert analytics["map"]["cells"] == []
+
+
+def test_dashboard_filtered_spikes_keep_existing_baseline_math(dashboard_client, pg_connection, dashboard_window):
+    start = datetime.fromisoformat(dashboard_window["start"])
+    run_id = pg_connection.execute("SELECT id FROM ingestion_runs").fetchone()["id"]
+    common = _build_event(run_id, "unused")
+    rows = [
+        dict(common, dedupe_key=f"spike-{days_before}-{index}", primary_category="economics",
+             event_time_utc=start - timedelta(days=days_before))
+        for days_before, count in ((0, 10), (1, 3), (2, 1))
+        for index in range(count)
+    ]
+    insert_raw_and_normalized_batch(pg_connection, rows)
+    params = dict(dashboard_window, country="USA", category="economics")
+    response = dashboard_client.get("/spikes", params=params)
+    assert response.status_code == 200, response.text
+    assert response.json()["rows"] == [{
+        "category": "economics", "country_name": "United States", "recent_count": 10,
+        "baseline_avg": 2, "z_score": 8, "lift_ratio": 5,
+    }]
+
+
+def test_dashboard_freshness_distinguishes_source_and_completion(dashboard_client, pg_connection, dashboard_window):
+    empty = dashboard_client.get("/freshness").json()
+    assert empty["status"] == "no_successful_ingest"
+    assert empty["latest_export_time_utc"] is None
+    assert empty["latest_ingestion_completed_at_utc"] is None
+    assert dashboard_client.get("/health/ready").status_code == 503
+
+    source_time = datetime.now(timezone.utc) - timedelta(hours=2)
+    insert_checkpoint(
+        pg_connection, source="gdelt_events_v2", export_time_utc=source_time,
+        export_url="https://example.invalid/export", export_filename="export",
+    )
+    mark_checkpoint_completed(
+        pg_connection, source="gdelt_events_v2", export_time_utc=source_time,
+        row_count_raw=6, row_count_inserted=6, row_count_duplicates=0,
+    )
+    run_id = pg_connection.execute("SELECT id FROM ingestion_runs").fetchone()["id"]
+    update_ingestion_run(pg_connection, run_id=run_id, status="completed", exports_completed=1, finished=True)
+    body = dashboard_client.get("/freshness").json()
+    assert body["status"] == "source_stale"
+    assert datetime.fromisoformat(body["latest_export_time_utc"]) == source_time
+    assert body["latest_export_completed_at_utc"] == body["latest_ingestion_completed_at_utc"]
+    assert body["latest_event_time_utc"] == dashboard_window["end"]
+    assert body["latest_event_occurrence_date"] == "2026-03-15"
+    assert dashboard_client.get("/freshness", params={"max_age_minutes": 180}).json()["status"] == "healthy"
+    assert dashboard_client.get("/health/ready").status_code == 200
+    pg_connection.execute("UPDATE ingestion_runs SET finished_at = NOW() - INTERVAL '2 hours'")
+    assert dashboard_client.get("/freshness").json()["status"] == "ingestion_stale"
+    assert dashboard_client.get("/health/ready").status_code == 503
 
 
 def test_ingestion_run_and_checkpoint_creation(pg_connection):
