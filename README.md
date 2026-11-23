@@ -60,12 +60,25 @@ Core modules:
 ### Requirements
 
 - Python 3.12+
-- PostgreSQL
+- PostgreSQL with PostGIS available on the server. The migration role must be able
+  to enable the extension in the database, or an administrator can enable it first.
+  On Windows, the PostgreSQL installer and Stack Builder provide both components.
+
+Create a dedicated database, such as `global_news_monitor`, using your local
+PostgreSQL tools. For integration tests, create a second database such as
+`global_news_monitor_test`.
 
 ### Install dependencies
 
 ```bash
-pip install -r requirements.txt
+python -m venv .venv
+```
+
+Activate it with `source .venv/bin/activate` on macOS/Linux or
+`.venv\Scripts\Activate.ps1` in PowerShell, then install dependencies.
+
+```bash
+python -m pip install -r requirements.txt
 ```
 
 ### Configure environment
@@ -150,6 +163,17 @@ python -m src.main stats --hours 24
 uvicorn src.api.main:app --reload
 ```
 
+### Run continuous ingestion
+
+```bash
+python scripts/run_scheduler.py
+```
+
+Run the scheduler as a separate process from the API. It starts an ingest
+immediately and targets a 15-minute interval between starts. It processes one
+export at a time and continues polling after a failed or timed-out run.
+It polls the latest export, so missed intervals are not automatically backfilled.
+
 ## API Endpoints
 
 - `GET /health`
@@ -216,8 +240,13 @@ In practice, that means:
 Run the full test suite:
 
 ```bash
-pytest -q
+python -m pip install pytest
+python -m pytest -q -rs
 ```
+
+Set `TEST_DATABASE_URL` to a disposable PostGIS-enabled database to include
+PostgreSQL integration tests. The suite applies the complete Alembic chain to
+that database and skips database tests when the test URL is absent.
 
 The test suite covers:
 
@@ -234,7 +263,6 @@ The test suite covers:
 - richer dashboard-oriented API endpoints and precomputed aggregates
 - stronger data quality diagnostics for unknown country and event code handling
 - structured metrics export for monitoring
-- scheduled ingest runner for continuous polling
 - frontend dashboard on top of the FastAPI service
 
 ## Why This Project Matters
