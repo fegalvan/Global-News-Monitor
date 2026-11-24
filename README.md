@@ -1,6 +1,6 @@
 # Global News Monitor
 
-Global News Monitor is a Python backend and data pipeline for ingesting structured GDELT event exports, normalizing and classifying the data, storing it in PostgreSQL, and exposing read APIs for downstream analytics and dashboards.
+Global News Monitor ingests structured GDELT event exports into PostgreSQL and serves an interactive dashboard through FastAPI and React. Explore coded event activity by country, category, and time, and inspect the source references behind individual records.
 
 The project is designed as a production-aware ingestion service rather than a one-off script. It includes checkpointing, retry logic, idempotent inserts, single-run protection, dropped-row auditing, and readiness checks for API consumers.
 
@@ -11,7 +11,7 @@ This system polls the latest GDELT Event export, parses the compressed dataset, 
 It also exposes:
 
 - CLI commands for ingestion, migrations, and inspection
-- a FastAPI read service for powering a dashboard
+- a FastAPI read service and a React dashboard with shared filters, maps, and charts
 - operational metadata for ingestion runs, checkpoints, and rejected rows
 
 ## Features
@@ -44,6 +44,8 @@ flowchart LR
     G --> J["API / CLI queries"]
     H --> J
     B --> K["ingestion_runs + checkpoints"]
+    K --> J
+    J --> L["React dashboard"]
 ```
 
 Core modules:
@@ -173,6 +175,76 @@ Run the scheduler as a separate process from the API. It starts an ingest
 immediately and targets a 15-minute interval between starts. It processes one
 export at a time and continues polling after a failed or timed-out run.
 It polls the latest export, so missed intervals are not automatically backfilled.
+
+## Run the dashboard locally
+
+The React and TypeScript dashboard is in `frontend/`. It uses Vite, Leaflet
+with bundled Natural Earth boundaries, and Recharts. Node.js 22.12 or later
+and npm are required alongside the Python and PostGIS setup above.
+
+After configuring the root `.env` and activating the Python virtual
+environment, run these commands from the repository root:
+
+```bash
+python -m src.main migrate
+python -m src.main ingest
+python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000
+```
+
+In a second terminal, start Vite:
+
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+Open the local URL printed by Vite, usually `http://localhost:5173`. To keep
+data arriving while you use the dashboard, run
+`python scripts/run_scheduler.py` in a third terminal from the repository root.
+
+The browser uses `/api` by default. Vite forwards those requests to
+`http://127.0.0.1:8000` during development. To override these settings, copy
+`frontend/.env.example` to `frontend/.env.local` and edit it:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `VITE_API_BASE_URL` | `/api` | Public browser API base, included in the build |
+| `API_PROXY_TARGET` | `http://127.0.0.1:8000` | Local Vite proxy destination |
+
+For a static production build, configure the hosting platform to forward
+`/api/*` to FastAPI. If using a separate origin directly, configure FastAPI
+CORS for the specific frontend origin. Database credentials belong in the
+backend environment.
+
+```bash
+npm test
+npm run build
+npm run preview
+```
+
+Run those commands from `frontend/`. The build includes a TypeScript check
+and writes the static site to `frontend/dist/`.
+
+### Dashboard behavior
+
+- Country, category, and UTC time-window filters apply to the map, KPIs,
+  charts, indicator panels, and event feed. The event feed loads 20 records
+  at a time and resets when the selection changes.
+- The dashboard checks freshness every minute while the tab is visible.
+  A newly processed export refreshes the rolling windows together. Custom
+  ranges remain fixed and can be refreshed manually. Source export,
+  ingestion completion, reported event date, and frontend refresh are shown
+  separately.
+- The map displays two-degree cells and supports zoom, pan, and country
+  selection where a boundary can be matched to an available GDELT country
+  name. Use the country filter for codes with ambiguous names or missing
+  boundaries. Geographic coverage can be partial, and the map reports events
+  outside its 500 busiest cells.
+- Coverage depends on the exports collected in the database. A new or
+  interrupted collector can have empty chart buckets or too little history
+  for spike candidates. The dashboard labels these cases and shows stale data
+  or API outages separately.
 
 ## API Endpoints
 
@@ -380,10 +452,9 @@ The test suite covers:
 
 ## Future Improvements
 
-- richer dashboard-oriented API endpoints and precomputed aggregates
+- precomputed aggregates for longer reporting windows
 - stronger data quality diagnostics for unknown country and event code handling
 - structured metrics export for monitoring
-- frontend dashboard on top of the FastAPI service
 
 ## Why This Project Matters
 
