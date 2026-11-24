@@ -19,7 +19,7 @@ from src.ingestion.dashboard_queries import (
 )
 from src.ingestion.history_queries import fetch_history
 from src.main import get_event_label
-from src.utils.country_mapping import COUNTRY_NAME_BY_CODE
+from src.utils.country_mapping import COUNTRY_NAME_BY_CODE, map_actor_country_code
 
 router = APIRouter()
 Category = Literal["conflict", "protest", "politics", "diplomacy", "economics", "cyber", "crisis"]
@@ -103,6 +103,9 @@ def events(
     for row in page:
         row["event_time_utc"] = row["event_time_utc"].astimezone(timezone.utc)
         row["event_label"] = get_event_label(row["event_code"] or "")
+        for actor in ("actor1", "actor2"):
+            code = row.get(f"{actor}_country_code")
+            row[f"{actor}_country_name"] = map_actor_country_code(code) if code else None
     next_cursor = None
     if len(rows) > limit:
         next_cursor = {"before_time": page[-1]["event_time_utc"], "before_id": page[-1]["event_id"]}

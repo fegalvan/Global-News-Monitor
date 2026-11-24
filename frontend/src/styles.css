@@ -181,7 +181,6 @@ a:hover { text-decoration: underline; }
 .rank-track i { display: block; height: 100%; background: #6faead; border-radius: 2px; }
 
 .analysis-grid { margin: .9rem 0; display: grid; grid-template-columns: minmax(13rem, .8fr) minmax(0, 2.25fr); gap: .9rem; }
-.indicator-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .9rem; }
 .category-strip { margin: .15rem .9rem .5rem; display: flex; height: .48rem; gap: 2px; border-radius: 2px; overflow: hidden; }
 .category-strip span { flex-basis: 0; }
 .category-chart { list-style: none; padding: 0 .66rem .6rem; }
@@ -193,10 +192,6 @@ a:hover { text-decoration: underline; }
 .category-chart button:hover, .category-chart button[aria-pressed=true] { background: #1c2b39; }
 .category-chart i, .event-category i { border-radius: 2px; width: .46rem; height: .46rem; flex: 0 0 auto; }
 .category-chart span { color: #afc2d4; font-family: var(--mono); text-align: right; font-size: .75rem; }
-.indicator-scroll { overflow: auto; max-height: 14rem; }
-.indicator-note { font-size: .79rem; color: var(--subtle); margin: .55rem .9rem .8rem; line-height: 1.4; }
-.indicator-scroll table { min-width: 17rem; }
-.indicator-scroll td, .indicator-scroll th { padding: .45rem .5rem; font-size: .76rem; }
 
 table { width: 100%; border-collapse: collapse; text-align: left; }
 thead { background: #192533; color: #b9c8d9; }
@@ -261,7 +256,7 @@ tbody tr:hover { background: #182535; }
   .custom-range .outline-button { justify-self: start; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .55rem; }
   .metric { padding: .62rem; }
-  .overview-grid, .indicator-grid { grid-template-columns: minmax(0, 1fr); gap: .7rem; }
+  .overview-grid { grid-template-columns: minmax(0, 1fr); gap: .7rem; }
   .analysis-grid { gap: .7rem; }
   .map-frame { min-height: 16.5rem; }
   .volume-chart { height: 11.25rem; }

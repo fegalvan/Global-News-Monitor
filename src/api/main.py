@@ -21,7 +21,7 @@ from src.main import (
     get_tension_payload,
 )
 
-app = FastAPI(title="Global News Monitor API")
+app = FastAPI(title="Global News Monitor API", version="1.1.0")
 app.include_router(dashboard_router)
 logger = logging.getLogger("uvicorn.error")
 TIMED_ROUTES = {"/analytics", "/events", "/history", "/map", "/country-profile", "/health/monitor"}

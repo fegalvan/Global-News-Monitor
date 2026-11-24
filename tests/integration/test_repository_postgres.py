@@ -160,7 +160,9 @@ def dashboard_window(pg_connection):
         dict(common, dedupe_key="tie-two", event_time_utc=start),
         dict(common, dedupe_key="other-category", primary_category="politics", event_time_utc=start),
         dict(common, dedupe_key="other-country", action_geo_country_code="CA", country_name="Canada",
-             action_geo_lat=90, action_geo_long=180, event_time_utc=start + timedelta(hours=1)),
+             action_geo_lat=90, action_geo_long=180, event_time_utc=start + timedelta(hours=1),
+             raw_payload={"EventCode": "190", "ActionGeo_CountryCode": "CA", "Actor1CountryCode": "GBR",
+                          "ActionGeo_Type": "4", "SOURCEURL": "https://Report.Example:443/article"}),
         dict(common, dedupe_key="end", event_time_utc=end),
     ]
     insert_raw_and_normalized_batch(pg_connection, rows)
@@ -437,6 +439,8 @@ def test_retention_expires_coverage_and_prunes_detail_in_bounded_batches(pg_conn
     assert pg_connection.execute("SELECT dedupe_key FROM raw_events").fetchone()["dedupe_key"] == "recent"
     states = pg_connection.execute("SELECT status FROM gdelt_export_checkpoints ORDER BY export_time_utc").fetchall()
     assert states == [{"status": "expired"}, {"status": "completed"}]
+    counts = pg_connection.execute("SELECT live_count, historical_count FROM event_hourly_counts").fetchone()
+    assert counts == {"live_count": 1, "historical_count": 3}
 
 
 
@@ -676,6 +680,10 @@ def test_map_and_profile_endpoints_are_bounded(dashboard_client, dashboard_windo
     profile = dashboard_client.get("/country-profile", params={**dashboard_window, "country": "CA"})
     assert profile.status_code == 200, profile.text
     assert profile.json()["country_name"] == "Canada"
+    assert profile.json()["sources"] == [{"label": "report.example", "count": 1}]
+    events = dashboard_client.get("/events", params={**dashboard_window, "country": "CA"}).json()["rows"]
+    assert events[0]["geographic_precision"] == "locality"
+    assert events[0]["actor1_country_name"] == "United Kingdom"
     assert dashboard_client.get("/country-profile", params=dashboard_window).status_code == 422
     catalog = dashboard_client.get("/countries").json()["rows"]
     assert {"country_code": "GB", "country_name": "Gabon"} in catalog

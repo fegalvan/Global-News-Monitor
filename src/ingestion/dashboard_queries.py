@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 
 from src.db import fetch_all, fetch_one
 from src.ingestion.transform import SOURCE
@@ -58,7 +59,7 @@ def fetch_events(connection, filters: EventFilters, *, limit: int, before: tuple
                r.raw_payload ->> 'ActionGeo_CountryCode' AS original_country_code,
                r.raw_payload ->> 'Actor1CountryCode' AS actor1_country_code,
                r.raw_payload ->> 'Actor2CountryCode' AS actor2_country_code,
-               CASE r.raw_payload ->> 'ActionGeo_Type'
+               CASE btrim(r.raw_payload ->> 'ActionGeo_Type')
                    WHEN '0' THEN 'none' WHEN '1' THEN 'country'
                    WHEN '2' THEN 'administrative_area' WHEN '3' THEN 'locality'
                    WHEN '4' THEN 'locality' WHEN '5' THEN 'administrative_area'
@@ -224,7 +225,7 @@ def fetch_profile_details(connection, filters: EventFilters):
         WITH details AS (
             SELECT nullif(r.action_geo_full_name, '') AS location,
                    lower(substring(btrim(r.raw_payload ->> 'SOURCEURL')
-                       from '^https?://([a-zA-Z0-9.-]+)(?:[:/;?#]|$)')) AS host
+                       from '(?i)^https?://([a-z0-9.-]+)(?::[0-9]{{1,5}})?(?:[/;?#]|$)')) AS host
             FROM normalized_events n JOIN raw_events r ON n.raw_event_id = r.id
             WHERE {where.replace("event_time_utc", "n.event_time_utc")}
         ),
@@ -244,26 +245,32 @@ def fetch_profile_details(connection, filters: EventFilters):
 
 def fetch_viewport(connection, filters: EventFilters, bounds: tuple[float, float, float, float], degrees: float):
     south, west, north, east = bounds
-    longitude_condition = "longitude BETWEEN %s AND %s"
-    if west > east:
-        longitude_condition = "(longitude >= %s OR longitude <= %s)"
     where, params = filters.where()
+    # The normalized table constrains coordinate ranges. Full-world requests
+    # only need the partial index's non-null predicate.
+    conditions = [where, "latitude IS NOT NULL", "longitude IS NOT NULL"]
+    if south > -90 or north < 90:
+        conditions.append("latitude BETWEEN %s AND %s")
+        params += Decimal(str(south)), Decimal(str(north))
+    if west > -180 or east < 180:
+        conditions.append("(longitude >= %s OR longitude <= %s)" if west > east else "longitude BETWEEN %s AND %s")
+        params += Decimal(str(west)), Decimal(str(east))
     return fetch_all(
         connection,
         f"""
         WITH positioned AS (
             SELECT latitude, longitude,
-                   least(floor((latitude + 90) / %s), 180 / %s - 1) AS y,
-                   least(floor((longitude + 180) / %s), 360 / %s - 1) AS x
+                   least(floor((latitude::double precision + 90) / %s), 180 / %s - 1)::int AS y,
+                   least(floor((longitude::double precision + 180) / %s), 360 / %s - 1)::int AS x
             FROM normalized_events
-            WHERE {where} AND latitude BETWEEN %s AND %s AND {longitude_condition}
+            WHERE {' AND '.join(conditions)}
         )
-        SELECT avg(latitude)::double precision AS latitude,
-               avg(longitude)::double precision AS longitude, count(*) AS count,
+        SELECT avg(latitude::double precision) AS latitude,
+               avg(longitude::double precision) AS longitude, count(*) AS count,
                (y * %s - 90)::double precision AS grid_south,
                (x * %s - 180)::double precision AS grid_west
         FROM positioned GROUP BY x, y
         ORDER BY count DESC, latitude, longitude
         """,
-        (degrees, degrees, degrees, degrees, *params, south, north, west, east, degrees, degrees),
+        (degrees, degrees, degrees, degrees, *params, degrees, degrees),
     )
