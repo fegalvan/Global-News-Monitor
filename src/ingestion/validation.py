@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from src.utils.country_mapping import map_country_code
+from src.domain.events.reference import normalize_event_code
+from src.utils.country_mapping import country_identity
 
 ALLOWED_CATEGORIES = {
     "conflict",
@@ -16,16 +16,14 @@ ALLOWED_CATEGORIES = {
     "cyber",
     "crisis",
 }
-COUNTRY_CODE_RE = re.compile(r"^[A-Z]{2,3}$")
-EVENT_CODE_RE = re.compile(r"^\d{2,3}$")
-UNKNOWN_TEXT_VALUES = {"", "UNKNOWN", "NULL", "NONE", "N/A", "NA", "-"}
 
 
 def _to_decimal(value: Any) -> Decimal | None:
     if value is None:
         return None
     try:
-        return Decimal(str(value).strip())
+        parsed = Decimal(str(value).strip())
+        return parsed if parsed.is_finite() else None
     except (InvalidOperation, ValueError):
         return None
 
@@ -47,18 +45,6 @@ def _first_not_none(*values: Any) -> Any:
     return None
 
 
-def _normalize_country_code(value: Any) -> str | None:
-    if value is None:
-        return None
-
-    text = str(value).strip().upper()
-    if text in UNKNOWN_TEXT_VALUES:
-        return None
-    if not COUNTRY_CODE_RE.match(text):
-        return None
-    return text
-
-
 def validate_and_clean_event(
     event: dict[str, Any],
     export_time_utc: datetime,
@@ -76,9 +62,9 @@ def validate_and_clean_event(
         flags.append("time_future_outlier")
         drop = True
 
-    event_code = (event.get("event_code") or "").strip()
-    if event_code and not EVENT_CODE_RE.match(event_code):
-        event_code = None
+    original_event_code = event.get("event_code")
+    event_code = normalize_event_code(original_event_code)
+    if original_event_code and str(original_event_code).strip() and event_code is None:
         flags.append("bad_event_code")
 
     category = (event.get("primary_category") or "").strip().lower()
@@ -86,22 +72,18 @@ def validate_and_clean_event(
         category = "politics"
         flags.append("category_fallback")
 
-    country = _normalize_country_code(event.get("action_geo_country_code"))
-    if country is None:
-        country = _normalize_country_code(event.get("country_code"))
-    if country is None:
-        raw_payload = event.get("raw_payload")
-        if isinstance(raw_payload, dict):
-            country = _normalize_country_code(raw_payload.get("ActionGeo_CountryCode"))
-    if country is None and (
-        event.get("action_geo_country_code") is not None
-        or event.get("country_code") is not None
-    ):
-        flags.append("bad_country_code")
+    raw_payload = event.get("raw_payload") or {}
+    country, country_name, country_status = country_identity(raw_payload.get(
+        "ActionGeo_CountryCode", _first_not_none(event.get("action_geo_country_code"), event.get("country_code")),
+    ))
+    if country_status != "mapped":
+        flags.append(f"{country_status}_country_code")
 
     lat = _to_decimal(_first_not_none(event.get("latitude"), event.get("action_geo_lat")))
     lon = _to_decimal(_first_not_none(event.get("longitude"), event.get("action_geo_long")))
-    if (lat is None) ^ (lon is None):
+    if str(raw_payload.get("ActionGeo_Type", "")).strip() == "0":
+        lat = lon = None
+    elif (lat is None) ^ (lon is None):
         lat = None
         lon = None
         flags.append("partial_geo")
@@ -129,7 +111,7 @@ def validate_and_clean_event(
             "event_code": event_code,
             "primary_category": category,
             "action_geo_country_code": country,
-            "country_name": map_country_code(country),
+            "country_name": country_name,
             "action_geo_lat": lat,
             "action_geo_long": lon,
             "avg_tone": tone,

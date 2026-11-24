@@ -142,11 +142,12 @@ def get_event_category(event_code: str) -> str:
 
 
 def get_event_label(event_code: str) -> str:
+    from src.domain.events.reference import EVENT_LABELS
+
     event_label = EVENT_CODE_LABELS.get(event_code)
 
     if not event_label:
-        prefix = event_code[:2]
-        event_label = ROOT_EVENT_LABELS.get(prefix, "Unknown event")
+        event_label = EVENT_LABELS.get(event_code, "Unknown event")
 
     return event_label
 

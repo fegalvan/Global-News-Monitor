@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from src.domain.events.categorization import categorize_event
+from src.domain.events.reference import normalize_event_code
 from src.utils.country_mapping import map_country_code
 
 SOURCE = "gdelt_events_v2"
@@ -37,7 +38,7 @@ def _normalize_text(value: Any) -> str:
 
 def _parse_sql_date(value: Any) -> date | None:
     text = _clean_text(value)
-    if text is None:
+    if text is None or not re.fullmatch(r"[0-9]{8}", text):
         return None
 
     try:
@@ -48,7 +49,7 @@ def _parse_sql_date(value: Any) -> date | None:
 
 def _parse_date_added(value: Any) -> datetime | None:
     text = _clean_text(value)
-    if text is None:
+    if text is None or not re.fullmatch(r"[0-9]{14}", text):
         return None
 
     try:
@@ -63,7 +64,8 @@ def _parse_decimal(value: Any) -> Decimal | None:
         return None
 
     try:
-        return Decimal(text)
+        parsed = Decimal(text)
+        return parsed if parsed.is_finite() else None
     except (InvalidOperation, ValueError):
         return None
 
@@ -121,7 +123,7 @@ def normalize_event_for_insert(
     source_url = _clean_text(event.get("SOURCEURL"))
     category_result = categorize_event(
         {
-            "event_code": _clean_text(event.get("EventCode")),
+            "event_code": normalize_event_code(event.get("EventCode")),
             "actor1_name": _clean_text(event.get("Actor1Name")),
             "actor2_name": _clean_text(event.get("Actor2Name")),
             "action_geo_full_name": _clean_text(event.get("ActionGeo_FullName")),
