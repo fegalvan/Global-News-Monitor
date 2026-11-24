@@ -300,11 +300,11 @@ def get_readiness_payload(max_age_minutes: int | None = None) -> dict[str, objec
                 cursor.fetchone()
             latest_completed_run = fetch_latest_successful_ingestion(connection)
     except Exception as exc:
+        logging.getLogger(__name__).warning("readiness_database_check_failed type=%s", type(exc).__name__)
         return {
             "ready": False,
             "reason": "database_unavailable",
             "max_age_minutes": safe_max_age_minutes,
-            "detail": str(exc),
         }
 
     if latest_completed_run is None:
@@ -508,6 +508,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("monitor", help="Fetch latest export and print categorized events")
     subparsers.add_parser("ingest", help="Ingest latest export into PostgreSQL")
+    subparsers.add_parser("sync", help="Ingest recent missing GDELT exports with bounded catch-up")
     subparsers.add_parser("migrate", help="Apply Alembic migrations")
 
     latest_parser = subparsers.add_parser("latest", help="Show latest normalized events from DB")
@@ -603,6 +604,11 @@ def main() -> int:
         return run_momentum_command()
     if command == "ingest":
         return run_ingest_command()
+    if command == "sync":
+        from src.pipeline.scheduled_ingest import sync_recent_exports
+
+        sync_recent_exports()
+        return 0
     if command == "migrate":
         return run_migrations()
 

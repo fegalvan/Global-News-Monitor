@@ -1,0 +1,17 @@
+FROM node:24-bookworm-slim AS build
+WORKDIR /app
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend/index.html frontend/tsconfig.json frontend/vite.config.ts ./
+COPY frontend/src src
+RUN npm run build
+
+FROM caddy:2.11.9-builder-alpine AS proxy-build
+# Keep the x/net HTML parser security fix until the Caddy image includes it.
+RUN GOFLAGS=-p=2 GOMAXPROCS=2 GOGC=50 xcaddy build v2.11.9 \
+    --replace golang.org/x/net=golang.org/x/net@v0.62.0
+
+FROM caddy:2.11.9-alpine
+COPY --from=proxy-build /usr/bin/caddy /usr/bin/caddy
+COPY --from=build /app/dist /srv
+COPY deploy/Caddyfile /etc/caddy/Caddyfile

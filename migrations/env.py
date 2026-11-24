@@ -6,6 +6,7 @@ from pathlib import Path
 
 from alembic import context
 from sqlalchemy import create_engine, pool
+from sqlalchemy.engine import make_url
 
 try:
     from dotenv import load_dotenv
@@ -21,17 +22,20 @@ if load_dotenv is not None:
     project_root = Path(__file__).resolve().parents[1]
     load_dotenv(project_root / ".env")
 
-database_url = os.getenv("DATABASE_URL")
-if database_url:
-    config.set_main_option("sqlalchemy.url", database_url)
+database_url = make_url(
+    config.attributes.get("database_url")
+    or os.getenv("DATABASE_URL")
+    or config.get_main_option("sqlalchemy.url")
+)
+if database_url.drivername == "postgresql":
+    database_url = database_url.set(drivername="postgresql+psycopg")
 
 target_metadata = None
 
 
 def run_migrations_offline() -> None:
-    url = config.get_main_option("sqlalchemy.url")
     context.configure(
-        url=url,
+        url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -43,7 +47,7 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     connectable = create_engine(
-        config.get_main_option("sqlalchemy.url"),
+        database_url,
         poolclass=pool.NullPool,
     )
 

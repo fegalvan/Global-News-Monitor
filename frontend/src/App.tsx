@@ -1,0 +1,223 @@
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import type { FormEvent } from 'react'
+import { Activity, ChartNoAxesColumn, CircleAlert, Globe2, List, MapPin, Radio, RefreshCw } from 'lucide-react'
+import type { Bucket, Window } from './api'
+import { capitalize, categories, count, customWindow, freshnessStatus, liveWindow, utc } from './format'
+import { CategoryChart, CountryChart, EventFeed, Indicators, PanelHeading } from './Panels'
+import { useDashboard, useFreshness } from './useDashboard'
+
+const ActivityMap = lazy(() => import('./ActivityMap'))
+const VolumeChart = lazy(() => import('./VolumeChart'))
+const screens = [
+  { id: 'overview', label: 'Overview', icon: Globe2 },
+  { id: 'events', label: 'Events', icon: List },
+  { id: 'indicators', label: 'Indicators', icon: Activity },
+]
+
+export default function App() {
+  const [navigation, setNavigation] = useState(() => location.hash.slice(1) || 'overview')
+  const [country, setCountry] = useState('')
+  const [category, setCategory] = useState('')
+  const [mode, setMode] = useState<'1' | '7' | 'custom'>('1')
+  const [custom, setCustom] = useState<Window | null>(null)
+  const [customOpen, setCustomOpen] = useState(false)
+  const [rangeError, setRangeError] = useState(false)
+  const [refresh, setRefresh] = useState(0)
+  const freshness = useFreshness(refresh)
+  const exportTime = mode === 'custom' ? null : freshness.data?.latest_export_time_utc ?? null
+  const window = useMemo(
+    () => mode === 'custom' && custom ? custom : liveWindow(mode === '7' ? 7 : 1, exportTime),
+    // Manual refresh resolves a new live window even when the export is unchanged.
+    [mode, custom, exportTime, refresh, freshness.checked],
+  )
+  const hours = (Date.parse(window.end) - Date.parse(window.start)) / 3_600_000
+  const bucket: Bucket = hours <= 48 ? 'hour' : 'day'
+  const scope = JSON.stringify([country, category, mode, mode === 'custom' ? custom : null])
+  const board = useDashboard({ ...window, country, category }, bucket, scope, freshness.checked, refresh)
+  const analytics = board.data?.analytics
+  const displayedWindow = board.data?.filters ?? window
+  const countries = useMemo(() => board.countries.filter((row) => row.country_code).sort(
+    (a, b) => a.country_name.localeCompare(b.country_name) || a.country_code!.localeCompare(b.country_code!),
+  ), [board.countries])
+  const toggleCountry = useCallback((code: string) => setCountry((previous) => previous === code ? '' : code), [])
+  const toggleCategory = (code: string) => setCategory((previous) => previous === code ? '' : code)
+
+  useEffect(() => {
+    const updateNavigation = () => setNavigation(location.hash.slice(1) || 'overview')
+    globalThis.addEventListener('hashchange', updateNavigation)
+    return () => globalThis.removeEventListener('hashchange', updateNavigation)
+  }, [])
+
+  function changeMode(value: string) {
+    setRangeError(false)
+    if (value === 'custom') {
+      setCustomOpen(true)
+    } else {
+      setMode(value === '7' ? '7' : '1')
+      setCustomOpen(false)
+    }
+  }
+
+  function applyCustom(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const values = new FormData(event.currentTarget)
+    const parsed = customWindow(String(values.get('start')), String(values.get('end')))
+    setRangeError(!parsed)
+    if (parsed) {
+      setCustom(parsed)
+      setMode('custom')
+    }
+  }
+
+  function refreshNow() {
+    setRefresh((current) => current + 1)
+  }
+
+  const status = freshnessStatus(freshness.data?.status, freshness.error)
+  const topCategory = analytics?.category_counts[0]
+  const metrics = [
+    { label: 'Total events', value: analytics && count(analytics.summary.total_events), icon: Activity,
+      detail: 'In the selected window' },
+    { label: 'Countries represented', value: analytics && count(analytics.summary.countries_with_events), icon: Globe2,
+      detail: 'Distinct GDELT country codes' },
+    { label: 'Geolocated events', value: analytics && count(analytics.summary.geolocated_events), icon: MapPin,
+      detail: analytics?.summary.total_events
+        ? `${(100 * analytics.summary.geolocated_events / analytics.summary.total_events).toFixed(1)}% of selected events`
+        : 'Events with valid coordinates' },
+    { label: 'Most active category', value: topCategory && capitalize(topCategory.primary_category), icon: ChartNoAxesColumn,
+      detail: topCategory ? `${count(topCategory.count)} events` : 'By event count' },
+  ]
+
+  return (
+    <div className="shell">
+      <a className="skip-link" href="#main">Skip to dashboard</a>
+      <aside className="sidebar">
+        <a href="#overview" className="brand">
+          <div className="brand-icon"><Globe2 size={22} strokeWidth={1.8} /></div>
+          <span>Global News<br />{' '}Monitor</span>
+        </a>
+        <nav aria-label="Dashboard sections">
+          {screens.map(({ id, label, icon: Icon }) => (
+            <a key={id} href={`#${id}`} aria-current={navigation === id ? 'location' : undefined}>
+              <Icon size={17} />{label}
+            </a>
+          ))}
+        </nav>
+        <div className="sidebar-foot">
+          <Radio size={16} />
+          <div><strong>GDELT Project</strong><span>Event database</span></div>
+        </div>
+      </aside>
+
+      <main id="main" className="workspace">
+        <header className="overview-header" id="overview">
+          <div className="intro">
+            <h1>Global activity</h1>
+            <p>Explore global events coded from news coverage by the GDELT Project.</p>
+          </div>
+          <div className="feed-status">
+            <div className="feed-status-heading">
+              <span className={`status-pill ${status.tone}`} role="status"><i />{status.label}</span>
+              <button type="button" className="icon-button" title="Refresh dashboard" aria-label="Refresh dashboard"
+                disabled={board.loading} onClick={refreshNow}><RefreshCw size={16} /></button>
+            </div>
+            <dl>
+              <div><dt>Source export</dt><dd>{utc(freshness.data?.latest_export_time_utc ?? null)}</dd></div>
+              <div><dt>Ingestion completed</dt><dd>{utc(freshness.data?.latest_ingestion_completed_at_utc ?? null)}</dd></div>
+            </dl>
+          </div>
+        </header>
+
+        <section className="filters-panel" aria-label="Dashboard filters">
+          <div className="filter-grid">
+            <label>Country<select value={country} onChange={(event) => setCountry(event.target.value)}>
+              <option value="">All countries</option>
+              {country && !countries.some((row) => row.country_code === country) && <option value={country}>{country}</option>}
+              {countries.map((row) => <option key={row.country_code} value={row.country_code ?? ''}>
+                {row.country_name} ({row.country_code})
+              </option>)}
+            </select></label>
+            <label>Category<select value={category} onChange={(event) => setCategory(event.target.value)}>
+              <option value="">All categories</option>
+              {categories.map((item) => <option key={item} value={item}>{capitalize(item)}</option>)}
+            </select></label>
+            <label>Time window<select value={customOpen ? 'custom' : mode} onChange={(event) => changeMode(event.target.value)}>
+              <option value="1">Last 24 hours</option>
+              <option value="7">Last 7 days</option>
+              <option value="custom">Custom range (UTC)</option>
+            </select></label>
+            <button className="text-button reset-filters" type="button"
+              disabled={!country && !category && mode === '1' && !customOpen}
+              onClick={() => { setCountry(''); setCategory(''); changeMode('1') }}>
+              Reset filters
+            </button>
+          </div>
+          {customOpen && (
+            <form className="custom-range" onSubmit={applyCustom}>
+              <label>Start (UTC)<input type="datetime-local" name="start" defaultValue={window.start.slice(0, 16)} required /></label>
+              <label>End (UTC)<input type="datetime-local" name="end" defaultValue={window.end.slice(0, 16)} required /></label>
+              <button type="submit" className="outline-button">Apply range</button>
+              {rangeError && <span className="range-error" role="alert">Choose an end after the start and a range of at most 30 days.</span>}
+            </form>
+          )}
+        </section>
+
+        <div className="window-line">
+          <span>Showing {utc(displayedWindow.start)} to {utc(displayedWindow.end)}</span>
+          <span role="status">
+            {board.loading ? 'Loading dashboard…' : board.data ? `Dashboard refreshed ${utc(board.data.refreshedAt)}` : ''}
+          </span>
+        </div>
+        {board.error && (
+          <div className="api-error" role="alert">
+            <CircleAlert size={18} />
+            <span>{board.data ? 'Refresh failed. Showing the last successful result for this selection.'
+              : 'Dashboard data is unavailable. Check that FastAPI is running and try again.'}</span>
+            <button type="button" className="outline-button" onClick={refreshNow}>Try again</button>
+          </div>
+        )}
+
+        <section className="metrics" aria-label="Selected activity summary">
+          {metrics.map(({ label, value, detail, icon: Icon }) => (
+            <div className="metric" key={label}>
+              <div className="metric-top"><span>{label}</span><Icon size={17} /></div>
+              <strong>{value ?? '—'}</strong>
+              <small>{detail}</small>
+            </div>
+          ))}
+        </section>
+
+        <div className="overview-grid">
+          <section className="panel map-panel">
+            <PanelHeading title="Global activity map" subtitle="Event counts in 2° geographic cells">
+              {analytics && <span className="panel-meta">{count(analytics.map.cells.length)} cells</span>}
+            </PanelHeading>
+            <Suspense fallback={<div className="map-frame map-fallback">Loading world map…</div>}>
+              <ActivityMap data={analytics?.map} countries={board.countries} activeCountry={country}
+                onCountry={toggleCountry} pending={board.loading} unavailable={board.error} />
+            </Suspense>
+          </section>
+          <div className="overview-side">
+            <Suspense fallback={<section className="panel volume-panel"><PanelHeading title="Activity over time" />
+              <p className="panel-empty">Loading activity chart…</p></section>}>
+              <VolumeChart analytics={analytics} window={displayedWindow} bucket={board.data?.bucket ?? bucket} loading={board.loading} />
+            </Suspense>
+            <CountryChart analytics={analytics} country={country} onCountry={toggleCountry} loading={board.loading} />
+          </div>
+        </div>
+
+        <div className="analysis-grid">
+          <CategoryChart analytics={analytics} category={category} onCategory={toggleCategory} loading={board.loading} />
+          <Indicators spikes={board.data?.spikes} tension={board.data?.tension} loading={board.loading}
+            hours={(Date.parse(displayedWindow.end) - Date.parse(displayedWindow.start)) / 3_600_000} />
+        </div>
+        <EventFeed page={board.data?.events} loading={board.loading} loadingPage={board.loadingPage}
+          pageError={board.pageError} loadMore={board.loadMore} />
+        <footer className="workspace-footer">
+          <span>Source: GDELT Event Database · All times UTC</span>
+          <span>Latest reported event date {freshness.data?.latest_event_occurrence_date ?? '—'}</span>
+        </footer>
+      </main>
+    </div>
+  )
+}

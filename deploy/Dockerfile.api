@@ -1,0 +1,14 @@
+FROM python:3.12-slim-trixie
+WORKDIR /app
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+# Apply the zlib security update when it reaches Debian ahead of the base image.
+RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt && useradd --system gnm
+COPY alembic.ini .
+COPY migrations migrations
+COPY scripts scripts
+COPY sql sql
+COPY src src
+USER gnm

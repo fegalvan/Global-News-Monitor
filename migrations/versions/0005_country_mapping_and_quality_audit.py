@@ -29,6 +29,8 @@ def _country_name_case_expression(column_name: str) -> str:
 
 
 def upgrade() -> None:
+    # Alembic records this 38-character revision after running upgrade().
+    op.execute("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE TEXT")
     root = Path(__file__).resolve().parents[2]
     stage5_sql = (root / "sql" / "stage5_country_mapping_and_quality.sql").read_text(encoding="utf-8")
     op.execute(stage5_sql)

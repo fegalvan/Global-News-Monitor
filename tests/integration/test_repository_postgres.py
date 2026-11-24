@@ -1,14 +1,21 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from contextlib import nullcontext
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
+from zipfile import BadZipFile
 import os
 
 import psycopg
 import pytest
+from requests import ConnectionError, HTTPError, Response
+from alembic import command
+from alembic.config import Config
+from fastapi.testclient import TestClient
 
+from src.api.main import app
 try:
     from dotenv import load_dotenv
 except ImportError:  # pragma: no cover - optional dependency
@@ -16,6 +23,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 from src.ingestion.repository import (
     claim_checkpoint,
+    fetch_latest_successful_ingestion,
     insert_dropped_events,
     insert_data_quality_audit,
     insert_checkpoint,
@@ -26,10 +34,8 @@ from src.ingestion.repository import (
     try_acquire_ingestion_lock,
     update_ingestion_run,
 )
-
-
-def _load_sql(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+from src.ingestion.validation import validate_and_clean_event
+from src.pipeline import ingest_service, scheduled_ingest
 
 
 @pytest.fixture(scope="session")
@@ -38,33 +44,67 @@ def pg_connection():
     if load_dotenv is not None:
         load_dotenv(root / ".env")
 
-    database_url = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL")
+    database_url = os.getenv("TEST_DATABASE_URL")
     if not database_url:
-        pytest.skip("Set TEST_DATABASE_URL or DATABASE_URL for Postgres integration tests.")
+        pytest.skip("Set TEST_DATABASE_URL to a dedicated Postgres integration database.")
 
-    connection = psycopg.connect(database_url, row_factory=psycopg.rows.dict_row)
+    config = Config(str(root / "alembic.ini"))
+    config.attributes["database_url"] = database_url
+    command.upgrade(config, "head")
 
-    with connection.transaction():
-        # we apply schemas directly so integration tests validate real repository SQL
-        with connection.cursor() as cursor:
-            cursor.execute(_load_sql(root / "sql" / "stage1_schema.sql"))
-            cursor.execute(_load_sql(root / "sql" / "stage2_schema.sql"))
-            cursor.execute(_load_sql(root / "sql" / "stage5_country_mapping_and_quality.sql"))
-            cursor.execute(_load_sql(root / "sql" / "stage6_ingestion_observability.sql"))
-            cursor.execute(_load_sql(root / "sql" / "stage7_idempotency_hardening.sql"))
-
-    yield connection
-    connection.close()
+    with psycopg.connect(database_url, row_factory=psycopg.rows.dict_row, autocommit=True) as connection:
+        yield connection
 
 
 @pytest.fixture(autouse=True)
 def clean_tables(pg_connection):
-    with pg_connection.transaction():
+    with pg_connection.transaction(force_rollback=True):
         with pg_connection.cursor() as cursor:
             cursor.execute(
                 "TRUNCATE TABLE dropped_events, data_quality_audit, normalized_events, raw_events, gdelt_export_checkpoints, ingestion_runs RESTART IDENTITY CASCADE"
             )
-    yield
+        yield
+
+
+def test_migrations_reach_head(pg_connection):
+    with pg_connection.cursor() as cursor:
+        cursor.execute("SELECT version_num FROM alembic_version")
+        assert cursor.fetchone()["version_num"] == "0007_idempotency_hardening"
+        cursor.execute(
+            """
+            SELECT character_maximum_length
+            FROM information_schema.columns
+            WHERE table_schema = current_schema()
+              AND table_name = 'alembic_version'
+              AND column_name = 'version_num'
+            """
+        )
+        length = cursor.fetchone()["character_maximum_length"]
+        assert length is None or length >= len("0005_country_mapping_and_quality_audit")
+
+
+def test_latest_successful_ingestion_ignores_skipped_exports(pg_connection):
+    assert fetch_latest_successful_ingestion(pg_connection) is None
+
+    successful_run_id = uuid4()
+    skipped_run_id = uuid4()
+    for run_id, exports_completed in ((successful_run_id, 1), (skipped_run_id, 0)):
+        insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+        update_ingestion_run(
+            pg_connection,
+            run_id=run_id,
+            status="completed",
+            exports_seen=1,
+            exports_completed=exports_completed,
+            finished=True,
+        )
+
+    pg_connection.execute(
+        "UPDATE ingestion_runs SET finished_at = NOW() - INTERVAL '1 hour' WHERE id = %s",
+        (successful_run_id,),
+    )
+
+    assert fetch_latest_successful_ingestion(pg_connection)["id"] == successful_run_id
 
 
 def _build_event(run_id, dedupe_key: str) -> dict:
@@ -93,6 +133,308 @@ def _build_event(run_id, dedupe_key: str) -> dict:
         "category_reason": "root_event_code:19",
         "raw_payload": {"EventCode": "190"},
     }
+
+
+@pytest.fixture
+def dashboard_client(pg_connection, monkeypatch):
+    for module in ("src.api.dashboard", "src.api.main", "src.main"):
+        monkeypatch.setattr(f"{module}.get_connection", lambda: nullcontext(pg_connection))
+    with TestClient(app) as client:
+        yield client
+
+
+@pytest.fixture
+def dashboard_window(pg_connection):
+    start = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    end = start + timedelta(hours=2)
+    run_id = uuid4()
+    insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+    common = _build_event(run_id, "unused")
+    rows = [
+        dict(common, dedupe_key="before", event_time_utc=start - timedelta(microseconds=1)),
+        dict(common, dedupe_key="start", event_time_utc=start),
+        dict(common, dedupe_key="tie-one", event_time_utc=start, action_geo_long=None),
+        dict(common, dedupe_key="tie-two", event_time_utc=start),
+        dict(common, dedupe_key="other-category", primary_category="politics", event_time_utc=start),
+        dict(common, dedupe_key="other-country", action_geo_country_code="CA", country_name="Canada",
+             action_geo_lat=90, action_geo_long=180, event_time_utc=start + timedelta(hours=1)),
+        dict(common, dedupe_key="end", event_time_utc=end),
+    ]
+    insert_raw_and_normalized_batch(pg_connection, rows)
+    # Use a non-UTC session to exercise UTC output and bucket semantics.
+    pg_connection.execute("SET LOCAL TIME ZONE 'America/New_York'")
+    return {"start": start.isoformat(), "end": end.isoformat()}
+
+
+def test_dashboard_events_filter_and_paginate(dashboard_client, dashboard_window):
+    filters = dict(dashboard_window, country="usa", category="conflict", limit=2)
+    first = dashboard_client.get("/events", params=filters)
+    assert first.status_code == 200, first.text
+    first = first.json()
+    assert first["filters"]["country"] == "USA"
+    assert len(first["rows"]) == 2
+    assert first["rows"][0]["event_label"] == "Fight"
+    assert first["rows"][0]["event_code"] == "190"
+    assert first["rows"][0]["original_event_code"] == "190"
+    assert first["rows"][0]["location_name"] == "Washington, DC"
+    assert first["rows"][0]["actor1_name"] == "POLICE"
+    assert first["rows"][0]["goldstein_score"] == -5
+    assert first["rows"][0]["category_confidence"] == 0.82
+    assert first["rows"][1]["latitude"] is None and first["rows"][1]["longitude"] is None
+    assert first["rows"][0]["event_time_utc"] == dashboard_window["start"]
+
+    second = dashboard_client.get("/events", params={**filters, **first["next_cursor"]}).json()
+    assert len(second["rows"]) == 1 and second["next_cursor"] is None
+    ids = [row["event_id"] for row in first["rows"] + second["rows"]]
+    assert ids == sorted(set(ids), reverse=True)
+
+    empty = dashboard_client.get("/events", params={**filters, "country": "GB"}).json()
+    assert empty["rows"] == [] and empty["next_cursor"] is None
+
+
+@pytest.mark.parametrize(
+    "path, params",
+    [
+        ("/events", {"limit": 0}),
+        ("/events", {"limit": 201}),
+        ("/events", {"before_id": 1}),
+        ("/events", {"country": "United States"}),
+        ("/events", {"category": "other"}),
+        ("/events", {"start": "2026-03-15T00:00:00"}),
+        ("/events", {"start": "1773532800"}),
+        ("/analytics", {"start": "2026-03-15"}),
+        ("/analytics", {"start": "2026-04-15T00:00:00Z"}),
+        ("/analytics", {"start": "2026-02-01T00:00:00Z"}),
+        ("/analytics", {"bucket": "week"}),
+    ],
+)
+def test_dashboard_rejects_invalid_queries(path, params):
+    with TestClient(app) as client:
+        response = client.get(
+            path, params={"start": "2026-03-15T00:00:00Z", "end": "2026-03-15T02:00:00Z", **params},
+        )
+    assert response.status_code == 422, response.text
+
+
+def test_dashboard_analytics_and_filtered_indicators(dashboard_client, dashboard_window):
+    response = dashboard_client.get("/analytics", params=dashboard_window)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["summary"] == {"total_events": 5, "geolocated_events": 4, "countries_with_events": 2}
+    assert [row["count"] for row in body["series"]] == [4, 1]
+    assert body["series"][0]["bucket_start"] == dashboard_window["start"]
+    assert [row["count"] for row in body["country_counts"]] == [4, 1]
+    assert body["category_counts"] == [
+        {"primary_category": "conflict", "count": 4}, {"primary_category": "politics", "count": 1},
+    ]
+    assert body["map"]["cells"] == [
+        {"latitude": 39, "longitude": -77, "count": 3},
+        {"latitude": 89, "longitude": 179, "count": 1},
+    ]
+
+    filtered = dict(dashboard_window, country="USA", category="conflict")
+    daily = dashboard_client.get("/analytics", params={**filtered, "bucket": "day"}).json()
+    assert daily["summary"]["total_events"] == 3
+    assert daily["series"] == [{"bucket_start": dashboard_window["start"], "count": 3}]
+    assert daily["map"]["cells"][0]["count"] == 2
+    assert dashboard_client.get("/spikes", params=filtered).json()["rows"] == []
+    tension = dashboard_client.get("/tension", params=filtered).json()
+    assert tension["rows"][0]["event_count"] == 3
+    assert tension["rows"][0]["avg_tone"] == -5
+    empty = dashboard_client.get("/analytics", params={**filtered, "country": "GB"}).json()
+    assert empty["summary"]["total_events"] == 0
+    assert empty["series"] == empty["country_counts"] == empty["category_counts"] == empty["map"]["cells"] == []
+
+
+def test_dashboard_excludes_invalid_source_coordinates(dashboard_client, pg_connection, dashboard_window):
+    run_id = pg_connection.execute("SELECT id FROM ingestion_runs").fetchone()["id"]
+    event = _build_event(run_id, "invalid-geo")
+    event.update(primary_category="crisis", action_geo_long=Decimal("181"))
+    cleaned, flags, drop = validate_and_clean_event(event, event["export_time_utc"])
+    assert not drop
+    cleaned["validation_flags"] = flags
+    insert_raw_and_normalized_batch(pg_connection, [cleaned])
+
+    params = dict(dashboard_window, category="crisis")
+    event_row, = dashboard_client.get("/events", params=params).json()["rows"]
+    assert event_row["latitude"] is None and event_row["longitude"] is None
+    assert "invalid_geo_range" in event_row["validation_flags"]
+    analytics = dashboard_client.get("/analytics", params=params).json()
+    assert analytics["summary"]["total_events"] == 1
+    assert analytics["summary"]["geolocated_events"] == 0
+    assert analytics["map"]["cells"] == []
+
+
+def test_dashboard_filtered_spikes_keep_existing_baseline_math(dashboard_client, pg_connection, dashboard_window):
+    start = datetime.fromisoformat(dashboard_window["start"])
+    run_id = pg_connection.execute("SELECT id FROM ingestion_runs").fetchone()["id"]
+    common = _build_event(run_id, "unused")
+    rows = [
+        dict(common, dedupe_key=f"spike-{days_before}-{index}", primary_category="economics",
+             event_time_utc=start - timedelta(days=days_before))
+        for days_before, count in ((0, 10), (1, 3), (2, 1))
+        for index in range(count)
+    ]
+    insert_raw_and_normalized_batch(pg_connection, rows)
+    params = dict(dashboard_window, country="USA", category="economics")
+    response = dashboard_client.get("/spikes", params=params)
+    assert response.status_code == 200, response.text
+    assert response.json()["rows"] == [{
+        "category": "economics", "country_name": "United States", "recent_count": 10,
+        "baseline_avg": 2, "z_score": 8, "lift_ratio": 5,
+    }]
+
+
+def test_dashboard_freshness_distinguishes_source_and_completion(dashboard_client, pg_connection, dashboard_window):
+    empty = dashboard_client.get("/freshness").json()
+    assert empty["status"] == "no_successful_ingest"
+    assert empty["latest_export_time_utc"] is None
+    assert empty["latest_ingestion_completed_at_utc"] is None
+    assert dashboard_client.get("/health/ready").status_code == 503
+
+    source_time = datetime.now(timezone.utc) - timedelta(hours=2)
+    insert_checkpoint(
+        pg_connection, source="gdelt_events_v2", export_time_utc=source_time,
+        export_url="https://example.invalid/export", export_filename="export",
+    )
+    mark_checkpoint_completed(
+        pg_connection, source="gdelt_events_v2", export_time_utc=source_time,
+        row_count_raw=6, row_count_inserted=6, row_count_duplicates=0,
+    )
+    run_id = pg_connection.execute("SELECT id FROM ingestion_runs").fetchone()["id"]
+    update_ingestion_run(pg_connection, run_id=run_id, status="completed", exports_completed=1, finished=True)
+    body = dashboard_client.get("/freshness").json()
+    assert body["status"] == "source_stale"
+    assert datetime.fromisoformat(body["latest_export_time_utc"]) == source_time
+    assert body["latest_export_completed_at_utc"] == body["latest_ingestion_completed_at_utc"]
+    assert body["latest_event_time_utc"] == dashboard_window["end"]
+    assert body["latest_event_occurrence_date"] == "2026-03-15"
+    assert dashboard_client.get("/freshness", params={"max_age_minutes": 180}).json()["status"] == "healthy"
+    assert dashboard_client.get("/health/ready").status_code == 200
+    pg_connection.execute("UPDATE ingestion_runs SET finished_at = NOW() - INTERVAL '2 hours'")
+    assert dashboard_client.get("/freshness").json()["status"] == "ingestion_stale"
+    assert dashboard_client.get("/health/ready").status_code == 503
+
+
+def test_dashboard_coverage_distinguishes_completed_failed_and_expired(dashboard_client, pg_connection):
+    start = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    for offset, status in ((0, "completed"), (15, "failed"), (30, "expired"), (60, "completed")):
+        slot = start + timedelta(minutes=offset)
+        insert_checkpoint(
+            pg_connection, source="gdelt_events_v2", export_time_utc=slot,
+            export_url="https://example.invalid/export", export_filename="export", status=status,
+        )
+    response = dashboard_client.get("/analytics", params={
+        "start": start.isoformat(), "end": (start + timedelta(hours=1)).isoformat(),
+        "country": "CA",
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["coverage"] == [{
+        "bucket_start": start.isoformat(), "expected_exports": 4, "completed_exports": 1,
+    }]
+
+
+def test_scheduled_sync_prioritizes_freshness_and_retries_partial_exports(pg_connection, monkeypatch):
+    now = datetime.now(timezone.utc)
+    latest = now.replace(minute=now.minute // 15 * 15, second=0, microsecond=0)
+    oldest = latest - timedelta(hours=1)
+    calls = []
+    first_attempt = True
+
+    def url(slot):
+        return f"{scheduled_ingest.ARCHIVE}{slot:%Y%m%d%H%M%S}.export.CSV.zip"
+
+    def rows(export_url, **_):
+        nonlocal first_attempt
+        slot = ingest_service.parse_export_metadata(export_url)["export_time_utc"]
+        calls.append(slot)
+        if slot == oldest and first_attempt:
+            response = Response()
+            response.status_code = 404
+            raise HTTPError(response=response)
+        yield {"GLOBALEVENTID": str(int(slot.timestamp())), "EventCode": "190"}
+        if slot == latest and first_attempt:
+            first_attempt = False
+            raise ConnectionError("interrupted after the first committed chunk")
+
+    monkeypatch.setenv("GDELT_LOOKBACK_HOURS", "1")
+    monkeypatch.setenv("GDELT_MAX_EXPORTS_PER_RUN", "2")
+    monkeypatch.setenv("GDELT_RETENTION_DAYS", "0")
+    monkeypatch.setattr(scheduled_ingest, "get_connection", lambda: nullcontext(pg_connection))
+    monkeypatch.setattr(scheduled_ingest, "get_latest_export_metadata", lambda: {
+        "export_time_utc": latest, "export_url": url(latest),
+    })
+    monkeypatch.setattr(ingest_service, "BATCH_SIZE", 1)
+    monkeypatch.setattr(ingest_service, "iter_export_rows", rows)
+
+    with pytest.raises(ConnectionError):
+        scheduled_ingest.sync_recent_exports()
+    assert calls == [oldest, latest]
+
+    scheduled_ingest.sync_recent_exports()
+    assert calls[-2:] == [oldest + timedelta(minutes=15), oldest + timedelta(minutes=30)]
+    pg_connection.execute("""
+        UPDATE gdelt_export_checkpoints
+        SET processing_started_at = NOW() - INTERVAL '1 hour' WHERE status = 'failed'
+    """)
+    scheduled_ingest.sync_recent_exports()
+    assert calls[-2:] == [oldest, latest]
+    scheduled_ingest.sync_recent_exports()
+    assert calls[-1] == latest - timedelta(minutes=15)
+    scheduled_ingest.sync_recent_exports()
+    assert len(calls) == 7
+
+    checkpoints = pg_connection.execute("""
+        SELECT status, attempt_count, row_count_duplicates FROM gdelt_export_checkpoints
+        ORDER BY export_time_utc
+    """).fetchall()
+    assert [row["status"] for row in checkpoints] == ["completed"] * 5
+    assert checkpoints[-1]["attempt_count"] == 2 and checkpoints[-1]["row_count_duplicates"] == 1
+    for table in ("raw_events", "normalized_events"):
+        assert pg_connection.execute(
+            psycopg.sql.SQL("SELECT count(*) AS count FROM {}").format(psycopg.sql.Identifier(table))
+        ).fetchone()["count"] == 5
+
+
+def test_scheduled_sync_skips_when_another_session_holds_lock(pg_connection, monkeypatch):
+    monkeypatch.setattr(scheduled_ingest, "get_connection", lambda: nullcontext(pg_connection))
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"], row_factory=psycopg.rows.dict_row) as other:
+        assert try_acquire_ingestion_lock(other)
+        monkeypatch.setattr(scheduled_ingest, "get_latest_export_metadata", lambda: pytest.fail("lock was bypassed"))
+        scheduled_ingest.sync_recent_exports()
+
+
+def test_fully_unparseable_export_is_failed_and_never_counted_as_coverage(pg_connection, monkeypatch):
+    def unreadable_rows(_url, *, on_parse_error):
+        on_parse_error("parse_error", {"row_number": 1, "row_length": 1})
+        return iter(())
+
+    monkeypatch.setattr(ingest_service, "iter_export_rows", unreadable_rows)
+    url = f"{scheduled_ingest.ARCHIVE}20260315000000.export.CSV.zip"
+    with pytest.raises(BadZipFile, match="only unparseable"):
+        ingest_service.ingest_export(url, connection=pg_connection)
+    assert pg_connection.execute("SELECT status FROM gdelt_export_checkpoints").fetchone()["status"] == "failed"
+    assert pg_connection.execute("SELECT count(*) AS count FROM dropped_events").fetchone()["count"] == 1
+
+
+def test_retention_expires_coverage_and_prunes_detail_in_bounded_batches(pg_connection):
+    run_id = uuid4()
+    insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+    recent = datetime.now(timezone.utc)
+    old = recent - timedelta(days=20)
+    rows = [dict(_build_event(run_id, key), export_time_utc=slot)
+            for key, slot in (("old-one", old), ("old-two", old), ("recent", recent))]
+    insert_raw_and_normalized_batch(pg_connection, rows)
+    for slot in (old, recent):
+        insert_checkpoint(pg_connection, "gdelt_events_v2", slot, "https://example.invalid/export", "export", "completed")
+    assert scheduled_ingest.prune_history(pg_connection, 17, limit=1) == 1
+    assert scheduled_ingest.prune_history(pg_connection, 17, limit=1) == 1
+    assert scheduled_ingest.prune_history(pg_connection, 17, limit=1) == 0
+    assert pg_connection.execute("SELECT count(*) AS count FROM normalized_events").fetchone()["count"] == 1
+    assert pg_connection.execute("SELECT dedupe_key FROM raw_events").fetchone()["dedupe_key"] == "recent"
+    states = pg_connection.execute("SELECT status FROM gdelt_export_checkpoints ORDER BY export_time_utc").fetchall()
+    assert states == [{"status": "expired"}, {"status": "completed"}]
+
 
 
 def test_ingestion_run_and_checkpoint_creation(pg_connection):
@@ -262,16 +604,9 @@ def test_insert_dropped_events_creates_audit_rows(pg_connection):
 
 
 def test_advisory_lock_prevents_parallel_ingest(pg_connection):
-    database_url = os.getenv("TEST_DATABASE_URL") or os.getenv("DATABASE_URL") or pg_connection.info.dsn
-    try:
-        second_connection = psycopg.connect(database_url, row_factory=psycopg.rows.dict_row)
-    except psycopg.OperationalError:
-        pytest.skip("Could not open a second Postgres connection for advisory lock test.")
-    try:
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"], row_factory=psycopg.rows.dict_row) as second_connection:
         assert try_acquire_ingestion_lock(pg_connection) is True
         assert try_acquire_ingestion_lock(second_connection) is False
         assert release_ingestion_lock(pg_connection) is True
         assert try_acquire_ingestion_lock(second_connection) is True
         assert release_ingestion_lock(second_connection) is True
-    finally:
-        second_connection.close()

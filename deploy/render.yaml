@@ -1,0 +1,48 @@
+# This blueprint defines paid instances. Review the estimate before applying it.
+services:
+  - type: web
+    name: global-news-monitor-api
+    runtime: python
+    plan: starter
+    region: virginia
+    buildCommand: pip install -r requirements.txt
+    preDeployCommand: python -m src.main migrate
+    startCommand: python -m uvicorn src.api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.12
+      - key: DATABASE_URL
+        fromDatabase:
+          name: global-news-monitor-postgres
+          property: connectionString
+  - type: cron
+    name: global-news-monitor-ingestion
+    runtime: python
+    plan: starter
+    region: virginia
+    schedule: "5,20,35,50 * * * *"
+    buildCommand: pip install -r requirements.txt
+    startCommand: timeout --kill-after=10s 12m python -u -m src.main sync
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.12
+      - key: DATABASE_URL
+        fromDatabase:
+          name: global-news-monitor-postgres
+          property: connectionString
+      - key: GDELT_LOOKBACK_HOURS
+        value: "24"
+      - key: GDELT_MAX_EXPORTS_PER_RUN
+        value: "8"
+      - key: GDELT_RETENTION_DAYS
+        value: "17"
+databases:
+  - name: global-news-monitor-postgres
+    region: virginia
+    plan: 0.1c-256mb
+    databaseName: gnm
+    postgresMajorVersion: "17"
+    diskSizeGB: 5
+    storageAutoscalingEnabled: false
+    ipAllowList: []

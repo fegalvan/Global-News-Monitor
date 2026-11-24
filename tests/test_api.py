@@ -1,6 +1,18 @@
 from fastapi.testclient import TestClient
+from psycopg import OperationalError
 
 from src.api.main import app
+
+
+def test_database_error_does_not_expose_internal_details(monkeypatch):
+    def fail():
+        raise OperationalError("internal connection details")
+
+    monkeypatch.setattr("src.api.dashboard.get_connection", fail)
+    with TestClient(app) as client:
+        response = client.get("/freshness")
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Database temporarily unavailable"}
 
 
 def test_health_endpoint_returns_ok():

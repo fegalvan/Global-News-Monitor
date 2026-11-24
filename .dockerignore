@@ -1,0 +1,14 @@
+.git
+.venv
+downloads
+.azure
+.aws
+.ssh
+**/.env
+**/.env.*
+**/.envrc
+**/__pycache__
+**/node_modules
+**/dist
+**/.pytest_cache
+docs

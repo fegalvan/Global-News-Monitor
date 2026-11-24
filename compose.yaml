@@ -1,0 +1,64 @@
+x-backend: &backend
+  image: global-news-monitor-backend
+  build:
+    context: .
+    dockerfile: deploy/Dockerfile.api
+  environment:
+    DATABASE_URL: postgresql://gnm:${POSTGRES_PASSWORD:-}@postgres:5432/gnm?connect_timeout=10
+    GDELT_LOOKBACK_HOURS: ${GDELT_LOOKBACK_HOURS:-24}
+    GDELT_MAX_EXPORTS_PER_RUN: ${GDELT_MAX_EXPORTS_PER_RUN:-8}
+    GDELT_RETENTION_DAYS: ${GDELT_RETENTION_DAYS:-17}
+  restart: unless-stopped
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.postgres
+    environment:
+      POSTGRES_DB: gnm
+      POSTGRES_USER: gnm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U gnm -d gnm"]
+      interval: 5s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+  api:
+    <<: *backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: [sh, -c, "python -m src.main migrate && exec python -m uvicorn src.api.main:app --host 0.0.0.0 --port 8000"]
+    healthcheck:
+      test: [CMD, python, -c, "from urllib.request import urlopen; urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+  scheduler:
+    <<: *backend
+    depends_on:
+      api:
+        condition: service_healthy
+    command: [python, scripts/run_scheduler.py]
+  web:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.web
+    environment:
+      SITE_ADDRESS: ${SITE_ADDRESS:?Set SITE_ADDRESS}
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:80:80"
+      - "${BIND_ADDRESS:-0.0.0.0}:443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

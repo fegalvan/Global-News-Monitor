@@ -7,6 +7,7 @@ from datetime import timedelta
 from itertools import islice
 from typing import Any, Iterable, Iterator
 from uuid import uuid4
+from zipfile import BadZipFile
 
 from src.connectors.gdelt import (
     get_latest_export_metadata,
@@ -62,11 +63,16 @@ def ingest_latest_export() -> dict[str, int | str]:
     return ingest_export(export_metadata["export_url"])
 
 
-def ingest_export(export_url: str) -> dict[str, int | str]:
-    # im keeping the orchestration here so the cli stays super thin
+def ingest_export(export_url: str, *, connection=None, trigger_mode: str = "manual") -> dict[str, int | str]:
+    if connection is None:
+        with get_connection() as owned_connection:
+            return _ingest_export(export_url, owned_connection, trigger_mode)
+    return _ingest_export(export_url, connection, trigger_mode)
+
+
+def _ingest_export(export_url: str, connection, trigger_mode: str) -> dict[str, int | str]:
     run_id = uuid4()
     export_metadata = parse_export_metadata(export_url)
-    connection = get_connection()
     lock_acquired = False
     run_record_created = False
     checkpoint_source = SOURCE
@@ -95,7 +101,7 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
             insert_ingestion_run(
                 connection=connection,
                 run_id=run_id,
-                trigger_mode="manual",
+                trigger_mode=trigger_mode,
                 status="started",
             )
             run_record_created = True
@@ -320,9 +326,22 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
                 )
                 dropped_events_buffer.clear()
 
+        if not raw_row_count and parse_error_count:
+            raise BadZipFile("GDELT export contained only unparseable rows")
+
         duplicate_row_count = max(raw_row_count - inserted_row_count - dropped_row_count, 0)
+        missing_actor_percent = (missing_actor_count / raw_row_count * 100) if raw_row_count else 0.0
+        missing_geo_percent = (missing_geo_count / raw_row_count * 100) if raw_row_count else 0.0
+        unknown_country_percent = (unknown_country_count / raw_row_count * 100) if raw_row_count else 0.0
 
         with transaction(connection):
+            insert_data_quality_audit(
+                connection=connection,
+                total_events=raw_row_count,
+                missing_actor_pct=missing_actor_percent,
+                missing_geo_pct=missing_geo_percent,
+                unknown_country_pct=unknown_country_percent,
+            )
             mark_checkpoint_completed(
                 connection=connection,
                 source=checkpoint_source,
@@ -382,17 +401,6 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
         elapsed_seconds = max(time.perf_counter() - ingest_started_monotonic, 0.001)
         rate = raw_row_count / elapsed_seconds
         export_lag_seconds = max(int((time.time() - export_time_utc.timestamp())), 0)
-        missing_actor_percent = (missing_actor_count / raw_row_count * 100) if raw_row_count else 0.0
-        missing_geo_percent = (missing_geo_count / raw_row_count * 100) if raw_row_count else 0.0
-        unknown_country_percent = (unknown_country_count / raw_row_count * 100) if raw_row_count else 0.0
-        with transaction(connection):
-            insert_data_quality_audit(
-                connection=connection,
-                total_events=raw_row_count,
-                missing_actor_pct=missing_actor_percent,
-                missing_geo_pct=missing_geo_percent,
-                unknown_country_pct=unknown_country_percent,
-            )
         logger.info(
             "[INGEST METRICS] events_processed=%s rows_inserted=%s rate=%.2f events/sec retries=%s export_lag_seconds=%s",
             raw_row_count,
@@ -478,4 +486,3 @@ def ingest_export(export_url: str) -> dict[str, int | str]:
                     INGEST_ADVISORY_LOCK_KEY,
                     run_id,
                 )
-        connection.close()

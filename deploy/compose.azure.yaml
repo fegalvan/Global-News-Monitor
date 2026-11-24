@@ -1,0 +1,25 @@
+# Merge with compose.yaml. PostgreSQL is provisioned separately on Azure.
+x-runtime: &runtime
+  security_opt: [no-new-privileges:true]
+  logging:
+    driver: local
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  postgres:
+    profiles: [embedded-db]
+  api:
+    <<: *runtime
+    depends_on: !reset {}
+    environment:
+      DATABASE_URL: ${GNM_READ_DATABASE_URL:?Set the read-only Azure database URL}
+      PGOPTIONS: "-c statement_timeout=12000 -c default_transaction_read_only=on"
+    command: [python, -m, uvicorn, src.api.main:app, --host, 0.0.0.0, --port, "8000", --no-server-header, --limit-concurrency, "12"]
+  scheduler:
+    <<: *runtime
+    environment:
+      DATABASE_URL: ${GNM_WRITE_DATABASE_URL:?Set the Azure ingestion database URL}
+  web:
+    <<: *runtime
