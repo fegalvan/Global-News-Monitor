@@ -1,27 +1,25 @@
 # Deploy Global News Monitor
 
-Deployment is pending a hosting choice and account authorization. The
-templates in this repository are prepared for review and have not provisioned
-any resources. Costs below are estimates in USD checked November 23, 2026,
-before tax, domain renewals, or usage overages.
+Production is hosted in Azure North Central US under Azure for Students.
+See the [Azure runbook](#azure-production-deployment) for the deployed services,
+rollout commands, and security checks. Hosting estimates are in USD and were
+checked November 23, 2026. Taxes, domain renewals, and usage overages may add cost.
 
-## Hosting options
+## Hosting options evaluated
 
 | Option | Estimated recurring cost | Tradeoff |
 | --- | --- | --- |
 | Oracle Cloud Always Free VM with Compose | $0 if an eligible VM, storage, and hostname are available | One instance runs every service. A1 capacity is region-dependent and Oracle may reclaim idle instances. Use the student domain benefit for a hostname if eligible. |
-| Azure for Students VM with Compose | $0 out of pocket while eligible credit covers the VM, disk, and IP | The Pack lists $100 in Azure credit. Azure documents a 12-month term and student renewal eligibility. Size and regional charges determine how long the credit lasts. |
+| Azure for Students VM and Flexible Server | Estimated $0 to $3.65 per 730-hour month within the listed free allowances | Deployed. The Azure bill will confirm whether the Standard static IPv4 uses the free IP meter. The eligible student offer has a time limit. |
 | Vercel Hobby + Render Free API + Neon Free + GitHub Actions | $0 within limits, demo only | Render sleeps after 15 idle minutes and can take about one minute to wake. Neon Free provides 1 GB per project and 100 CU-hours per month. Public-repository GitHub Actions schedules can be delayed or dropped and disable after 60 days without repository activity. The database fits only a few days of this workload. |
 | Hetzner CX23 in Europe with Compose | $6.49 compute + $0.60 IPv4, totaling $7.09 if capacity is available | 2 vCPU, 4 GB RAM, 40 GB SSD. The product page showed it as unavailable during review. Hosting in Europe also adds network latency for visitors in the U.S. |
 | DigitalOcean Basic VM with Compose | $12 for 1 vCPU, 2 GiB RAM, 50 GiB SSD and 2,000 GiB transfer. Optional weekly VM backup adds $2.40, totaling $14.40. | One always-running host with OS, database and backup maintenance. The $6 1 GiB plan has less memory for PostgreSQL, ETL, and concurrent chart requests. |
 | Vercel Hobby + managed Render | About $15.50 at light use, itemized below | Less server maintenance. The small managed database needs a workload check, and cron and bandwidth can raise cost. |
 
-Start with an eligible Always Free VM if capacity and reclaim risk are
-acceptable. Azure student credit offers a time-limited alternative. Check
-the $7.09 Hetzner plan if European hosting is acceptable. The $12 DigitalOcean
-VM is the fallback with a published plan in this budget. Both use a single-instance
-deployment, so maintenance and provider outages can interrupt service.
-Confirm the hostname renewal price and optional backup before ordering.
+Azure was chosen for the student allowances, a dedicated PostgreSQL server,
+and the Azure-managed hostname. The estimates for alternate providers are
+available for future migration planning. Single-instance deployments can be
+interrupted by maintenance or provider outages.
 
 - [Oracle Always Free compute and storage](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm)
 - [GitHub Student Developer Pack and domain offers](https://education.github.com/pack)
@@ -176,20 +174,60 @@ direct browser connection to another origin requires adding only the
 approved frontend origins to FastAPI's CORS configuration. Database URLs
 remain in Compose or Render service environment settings.
 
-## Azure for Students — split VM and database
+## Azure production deployment
 
-The Azure plan uses a North Central US `Standard_B2ats_v2` Ubuntu VM and
-PostgreSQL 17 Flexible Server on Burstable `Standard_B1ms`. Confirm account
-eligibility for VM hours, the 64 GiB P6 OS disk, and 32 GB database and
-backup allowances before creating resources. One Standard static IPv4
-accounts for the estimated $3.65 monthly charge when those allowances apply.
-Use a single database instance with 32 GiB of storage, seven-day backup
-retention, and local backups. Leave high availability, geo-redundant
-backups, and storage auto-grow disabled for this configuration. Check
-storage and backup usage after initial ingestion and during steady state.
+The North Central US deployment runs Caddy, FastAPI, and the 15-minute
+scheduler on an Ubuntu 24.04 `Standard_B2ats_v2` VM. Azure manages the
+dedicated PostgreSQL 17 Flexible Server on Burstable `Standard_B1ms`.
+The VM has 2 vCPUs, 1 GiB of RAM, and a 64 GiB Premium SSD LRS OS disk
+at tier P6. The database has 32 GiB of storage, seven days of local backups,
+and storage auto-grow, high availability, and geo-redundant backups disabled.
 
-- Restrict SSH to the operator's IP and require key-only login. Test Caddy
-  via an SSH tunnel with its host ports bound to loopback. The API has no
+The deployment is in `rg-global-news-monitor-prod`. [Public dashboard](https://global-news-monitor.northcentralus.cloudapp.azure.com/)
+
+| Resource | Name |
+| --- | --- |
+| Ubuntu VM | `vm-gnm-prod` |
+| P6 OS disk | `osdisk-gnm-prod` |
+| PostgreSQL Flexible Server and database | `gnm-postgres-ncus-202611`, `gnm` |
+| VNet and app subnet | `vnet-gnm-prod`, `snet-gnm-app` |
+| NIC and network security group | `nic-gnm-prod`, `nsg-gnm-prod` |
+| Standard static public IPv4 | `pip-gnm-prod` |
+
+The student subscription lists 750 VM hours and 750 B1ms database hours
+per month, the P6 disk allowance, 32 GB each of database and backup storage,
+1,500 public IP hours, and 15 GB of outbound data. These allowances expire
+November 23, 2027 for this deployment. Azure reports the VM disk as P6,
+which matches [Microsoft's free VM disk configuration](https://marketplace.microsoft.com/en-us/product/microsoft.freeaccountvirtualmachine?tab=overview).
+Estimate $0 if the Standard static IPv4 is covered and usage stays within
+the allowances. For the IPv4, budget $3.65 per 730 hours at retail until
+the posted meter is visible. The free-services API returned an empty list
+during launch, and the usage-details API rejected the student offer. Review
+**Education → Overview** and
+**Subscriptions → Azure for Students → View all free services** after
+usage posts. Microsoft describes a one- to two-day delay for
+[free-service metering](https://learn.microsoft.com/en-us/azure/cost-management-billing/manage/check-free-service-usage).
+Keep the spending limit on and the $5 budget alerts enabled.
+Track VM outbound bytes and the database's storage and backup usage as
+history accumulates. A budget alert reports spending and leaves services
+running under the subscription's spending limit.
+
+During launch, Azure Monitor reported a database storage peak of 3.9 GiB,
+about 17 MiB of backups, and about 33 MiB of VM outbound traffic in the
+observed hour. This snapshot covers initial catch-up and build traffic.
+
+Provision a resource group, VNet, subnet, network security group, VM NIC,
+and one Standard static IPv4 with an Azure DNS label. Use an x64 Gen2 Ubuntu
+image, Trusted Launch with Secure Boot and vTPM, and an SSH public key.
+Install Docker Engine with its Compose plugin from the signed Docker apt
+repository. The host uses a 2 GiB swap file on its existing P6 disk. Docker
+stores its images locally, and Caddy stores its certificate state in a
+persistent Docker volume. The deployment uses no registry or separate
+build VM.
+
+- Restrict SSH to the operator's IP, require key-only login, and disable
+  direct root SSH. Test Caddy via an SSH tunnel with its host ports bound
+  to loopback. The API has no
   published host port. After the audit, bind Caddy to the public interface
   and open TCP 80 and 443 for ACME validation. Verify the issued HTTPS
   certificate and HTTP redirect from an external client before sharing the URL.
@@ -214,19 +252,69 @@ storage and backup usage after initial ingestion and during steady state.
   printing connection strings.
 
 ```bash
-docker compose --env-file deploy/.env -f compose.yaml -f deploy/compose.azure.yaml config --quiet
-docker compose --env-file deploy/.env -f compose.yaml -f deploy/compose.azure.yaml up -d --no-build
+docker compose -p app --env-file deploy/.env -f compose.yaml -f deploy/compose.azure.yaml config --quiet
+docker compose -p app --env-file deploy/.env -f compose.yaml -f deploy/compose.azure.yaml up -d --no-build --wait
 ```
 
-Build `linux/amd64` images on a machine with more memory and load them onto
-the small VM before starting the services. The Azure overlay
-disables the local PostgreSQL service by default and runs the API with a
-read-only login, read-only transactions, and a 12-second statement timeout.
-The ingestion login has write access only to the ingestion tables it uses.
-Verify every API route and a real ingestion cycle before opening Caddy to
-the public. Capture image vulnerability scan results at the deployed digests,
-and confirm NSG rules, DB firewall, read/write permissions, and TLS on the
-actual infrastructure.
+Build `linux/amd64` images off the host where possible. For this release
+the Go link step exceeded the VM's practical memory budget. The Caddy
+binary was compiled off-host with the versions in
+[`Dockerfile.web`](../deploy/Dockerfile.web), transferred by SSH, and packaged
+on the VM. To reproduce that build, use `xcaddy` from its official release and
+copy the resulting `proxy-build` directory to the host before packaging.
+
+```bash
+mkdir -p ../proxy-build/usr/bin
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 xcaddy build v2.11.9 \
+  --output ../proxy-build/usr/bin/caddy \
+  --replace golang.org/x/net=golang.org/x/net@v0.62.0
+
+# With the binary and source on the VM, run from the repo root.
+docker buildx build --load --platform linux/amd64 \
+  --build-context proxy-build=../proxy-build -t app-web -f deploy/Dockerfile.web .
+docker compose -p app --env-file deploy/.env --parallel 1 -f compose.yaml \
+  -f deploy/compose.azure.yaml build --pull api
+```
+
+The overlay disables local PostgreSQL and runs the API with a read-only
+login, read-only transactions, and a 12-second statement timeout. The
+ingestion login can write to the tables and sequences it uses. Docker
+rotates local service logs and restarts services after host or process
+restarts. Before opening Caddy to the public, verify the API routes and a
+real ingestion cycle. Scan both images at the deployed digests and check
+NSG rules, database firewall rules, permissions, and TLS.
+
+### Production verification
+
+The managed database reached `0007_idempotency_hardening` with PostgreSQL 17
+and PostGIS 3.6.4. Both runtime roles used hostname-verified TLS 1.3. The API
+role was denied a write, and a client outside the VM's database firewall rule
+could not connect. The network security group exposes only TCP 80 and 443 to
+the internet. Production responses served a trusted Let's Encrypt certificate,
+redirected HTTP to HTTPS, and included HSTS and a dashboard content security
+policy. The public FastAPI routes were reached through Caddy.
+
+Trivy scanned the exact images used for launch. It reported no detected
+secrets, critical advisories, or high-severity advisories with an available
+fix. Thirteen distinct high-severity Debian advisories and one Caddy
+dependency advisory remained without fixes. The Caddy configuration does
+not accept user-supplied JSON Web Keys. Rebuild and rescan as upstream
+patches become available.
+
+On November 24, 2026 UTC, the production scheduler started at 02:30 and
+ran again at 02:45 and 03:00 without a restart or manual ingest. Each run
+completed eight exports, including the most recent export and older
+unprocessed slots. The production database had 32 completed checkpoints
+and 24,162 distinct raw records with matching normalized rows at 03:00.
+
+The browser verification covered the map, combined country and category
+filtering, cursor pagination, and the responsive event feed. The open
+dashboard advanced from the 02:45 source export to 03:00, keeping United
+States and Politics selected while the count increased from 609 to 799.
+A public API check verified a fixed UTC window, coverage, and populated
+spike and tension routes. Initial coverage was partial and built up via
+scheduled catch-up. Single-instance availability and sustained load at
+the full retention window have yet to be measured.
 
 ## Public verification before publishing the URL
 

@@ -2,11 +2,11 @@
 
 Global News Monitor ingests structured GDELT event exports into PostgreSQL and serves an interactive dashboard through FastAPI and React. Explore coded event activity by country, category, and time, and inspect the source references behind individual records.
 
-**Deployment status:** Local verification is complete. Public hosting is pending a hosting choice and account authorization.
+**Live dashboard:** [Global News Monitor](https://global-news-monitor.northcentralus.cloudapp.azure.com/)
 
 ![Global News Monitor desktop dashboard showing regional activity and source coverage](docs/dashboard-desktop.jpg)
 
-The screenshot shows 31,989 real GDELT records in a 24-hour selection with 25 of 96 expected exports present. [Mobile event feed](docs/dashboard-mobile.jpg) · [Deployment guide and cost comparison](docs/DEPLOYMENT.md) · [Technical walkthrough](docs/TECHNICAL_WALKTHROUGH.md)
+The production screenshot shows 9,174 GDELT records with 14 of 96 expected exports in the selected 24-hour window during initial catch-up. The coverage count distinguishes gaps from observed zero activity. [Mobile event feed](docs/dashboard-mobile.jpg) · [Deployment guide](docs/DEPLOYMENT.md#azure-production-deployment) · [Technical walkthrough](docs/TECHNICAL_WALKTHROUGH.md)
 
 ## Project Overview
 
@@ -39,7 +39,11 @@ It also exposes:
 | Storage and migrations | PostgreSQL, PostGIS, psycopg, SQLAlchemy, Alembic |
 | Read API | FastAPI, Uvicorn |
 | Interface | React, TypeScript, Vite, Leaflet, Recharts |
-| Deployment templates | Docker Compose with Caddy, or Render with a Vercel static frontend |
+| Production | Azure Ubuntu VM with Caddy, FastAPI, and the scheduler in Docker Compose, plus Azure Database for PostgreSQL Flexible Server |
+
+The Azure scheduler runs every 15 minutes with a 24-hour catch-up window and
+17 days of rolling event detail. Caddy serves the static Vite build and
+proxies `/api/` over the same HTTPS origin.
 
 High-level flow:
 
@@ -478,7 +482,8 @@ frontend tests, and produced a successful Vite build. The local sample used
 Both indicator routes returned populated results. Historical coverage was
 sparse, so the magnitude of a spike in this sample is unreliable as a
 comparison with full-day activity. See the [deployment guide](docs/DEPLOYMENT.md)
-for measured storage and local request times.
+for measured storage and local request times, and the [production verification](docs/DEPLOYMENT.md#production-verification)
+for the public endpoints, scheduler, and image scan results.
 
 ## Future Improvements
 

@@ -195,13 +195,46 @@ checkpoints expired. PostgreSQL autovacuum can reuse space from deleted rows.
 Checkpoints, run records, and quality summaries remain as smaller operational
 records. See the [deployment guide](DEPLOYMENT.md) for cost, sizing, and rollout.
 
-The single-VM configuration uses Docker Compose, persistent PostgreSQL
-storage, and Caddy for TLS and same-origin API routing. The managed alternative
-uses Vercel, a Render FastAPI service, Render Postgres, and Render cron. Both
-keep the database off the browser path. PostgreSQL provides transactions,
-constraints, SQL aggregation, and geospatial types in one service. FastAPI and
-the static Vite build keep deployment small. Their division makes it possible
-to test real SQL independently and ship the same dashboard to either host.
+In Azure production, Docker Compose on one North Central US VM runs Caddy,
+FastAPI, and [`run_scheduler.py`](../scripts/run_scheduler.py). Caddy
+terminates HTTPS, serves the Vite build, and forwards `/api/` to FastAPI
+over the Compose network. The browser uses one origin for both. The
+only public web ports are Caddy's 80 and 443. SSH accepts keys from an
+operator IP, and FastAPI has no host port.
+
+```mermaid
+flowchart LR
+    Browser -->|HTTPS| Caddy
+    subgraph VM["Azure Ubuntu VM"]
+        Caddy -->|"/api/"| FastAPI
+        Scheduler["15-minute scheduler"]
+    end
+    Scheduler -->|Fetch HTTPS exports| GDELT
+    Scheduler -->|Write over TLS| PostgreSQL["Azure PostgreSQL + PostGIS"]
+    FastAPI -->|Read over TLS| PostgreSQL
+```
+
+PostgreSQL lives on an Azure Flexible Server with PostGIS. Keeping the
+database separate leaves the 1 GiB VM's memory available for serving
+requests and processing exports. It also separates database backups and
+updates from app deploys. The database firewall accepts the VM's exact
+static IPv4, and the connections verify the PostgreSQL server certificate
+and hostname. [`compose.azure.yaml`](../deploy/compose.azure.yaml) uses
+separate credentials for FastAPI and ingestion. The
+[`azure-roles.sql`](../deploy/azure-roles.sql) grants SELECT to the API
+on four tables and permits only the worker's required writes. A separate
+owner applies Alembic migrations and has no credential in either running
+container.
+
+The scheduler starts with the VM's Docker services and polls every 15
+minutes. This is separate from the browser's freshness polling. A closed
+tab, a local computer shutdown, or an API restart does not stop collection.
+The VM's memory was enough to run the services during launch, but the
+Caddy build spent much of its time swapping during Go linking. Compiling
+the patched binary off-host and scanning the packaged Linux image kept
+build-time memory pressure away from the running app.
+The [deployment guide](DEPLOYMENT.md#azure-production-deployment) covers
+the resource sizing, billing meters, and production checks.
 
 ## Where to start when debugging
 
