@@ -1,0 +1,13 @@
+{$SITE_ADDRESS} {
+    encode zstd gzip
+
+    handle_path /api/* {
+        header Cache-Control "no-store"
+        reverse_proxy api:8000
+    }
+
+    handle {
+        root * /srv
+        file_server
+    }
+}
