@@ -1,4 +1,4 @@
-import type { Bucket, Freshness, Sample, Window } from './api'
+import type { Bucket, Coverage, Freshness, Sample, Window } from './api'
 
 const HOUR = 3_600_000
 const DAY = 24 * HOUR
@@ -47,15 +47,17 @@ export function customWindow(startInput: string, endInput: string): Window | nul
   return { start: new Date(start).toISOString(), end: new Date(end).toISOString() }
 }
 
-export function activitySeries(rows: Sample[], window: Window, bucket: Bucket) {
-  if (!rows.length) return []
+export function activitySeries(rows: Sample[], window: Window, bucket: Bucket, coverage: Coverage[]) {
   const size = bucket === 'hour' ? HOUR : DAY
   const first = Math.floor(Date.parse(window.start) / size) * size
   const end = Date.parse(window.end)
   const counts = new Map(rows.map((row) => [Date.parse(row.bucket_start), row.count]))
+  const observed = new Set(coverage.filter(
+    (row) => row.expected_exports > 0 && row.completed_exports === row.expected_exports,
+  ).map((row) => Date.parse(row.bucket_start)))
   const series = []
   for (let time = first; time < end; time += size) {
-    series.push({ time, count: counts.get(time) ?? 0 })
+    series.push({ time, count: counts.get(time) ?? (observed.has(time) ? 0 : null) })
   }
   return series
 }

@@ -112,7 +112,8 @@ def analytics(params: DashboardFilters, bucket: Literal["hour", "day"] = "hour")
         result = fetch_analytics(connection, filters, bucket=bucket)
 
     series = result.pop("series")
-    for row in series:
+    coverage = result.pop("coverage")
+    for row in series + coverage:
         row["bucket_start"] = datetime.fromisoformat(row["bucket_start"]).replace(tzinfo=timezone.utc)
     map_cells = result.pop("map_cells")
     country_counts = result.pop("country_counts")
@@ -123,6 +124,7 @@ def analytics(params: DashboardFilters, bucket: Literal["hour", "day"] = "hour")
         "bucket": bucket,
         "summary": result,
         "series": series,
+        "coverage": coverage,
         "country_counts": country_counts,
         "country_counts_truncated": sum(row["count"] for row in country_counts) < result["total_events"],
         "category_counts": category_counts,

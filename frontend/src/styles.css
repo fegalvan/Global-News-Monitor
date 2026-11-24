@@ -163,6 +163,7 @@ a:hover { text-decoration: underline; }
 .leaflet-host .leaflet-tooltip-top::before { border-top-color: #476173; }
 .leaflet-host .leaflet-tooltip-bottom::before { border-bottom-color: #476173; }
 .volume-chart { height: 10.5rem; min-width: 0; margin: 0 .14rem .42rem .4rem; }
+.coverage-note { color: var(--subtle); font-size: .75rem; margin: .15rem .9rem .65rem; }
 .volume-panel .panel-empty { min-height: 8rem; }
 .country-chart { list-style: none; padding: 0 .75rem .68rem; }
 .country-bar {

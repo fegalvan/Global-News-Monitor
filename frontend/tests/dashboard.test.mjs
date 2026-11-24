@@ -33,11 +33,15 @@ test('source staleness, ingestion staleness, and API outages have distinct label
   assert.equal(freshnessStatus('healthy', true).label, 'API unavailable')
 })
 
-test('time-series fills missing UTC buckets and respects an exclusive end', () => {
+test('time-series distinguishes observed zero from an unobserved UTC bucket', () => {
   const window = { start: '2026-11-23T22:30:00Z', end: '2026-11-24T01:00:00Z' }
   const rows = [{ bucket_start: '2026-11-23T23:00:00Z', count: 12 }]
-  assert.deepEqual(activitySeries(rows, window, 'hour').map(({ count }) => count), [0, 12, 0])
-  assert.deepEqual(activitySeries([], window, 'hour'), [])
+  const coverage = [
+    { bucket_start: '2026-11-23T22:00:00Z', expected_exports: 2, completed_exports: 2 },
+    { bucket_start: '2026-11-23T23:00:00Z', expected_exports: 4, completed_exports: 1 },
+    { bucket_start: '2026-11-24T00:00:00Z', expected_exports: 4, completed_exports: 0 },
+  ]
+  assert.deepEqual(activitySeries(rows, window, 'hour', coverage).map(({ count }) => count), [0, 12, null])
 })
 
 test('event links only allow HTTP and HTTPS URLs', () => {

@@ -2,12 +2,14 @@ export type Window = { start: string; end: string }
 export type Filters = Window & { country?: string; category?: string }
 export type Bucket = 'hour' | 'day'
 export type Sample = { bucket_start: string; count: number }
+export type Coverage = { bucket_start: string; expected_exports: number; completed_exports: number }
 export type Country = { country_code: string | null; country_name: string; count: number }
 export type Cell = { latitude: number; longitude: number; count: number }
 
 export type Analytics = {
   summary: { total_events: number; geolocated_events: number; countries_with_events: number }
   series: Sample[]
+  coverage: Coverage[]
   country_counts: Country[]
   country_counts_truncated: boolean
   category_counts: { primary_category: string; count: number }[]

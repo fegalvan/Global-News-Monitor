@@ -9,11 +9,14 @@ const dateLabel = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'sho
 export default function VolumeChart({ analytics, window, bucket, loading }: {
   analytics?: Analytics; window: Window; bucket: Bucket; loading: boolean
 }) {
-  const rows = activitySeries(analytics?.series ?? [], window, bucket)
+  const coverage = analytics?.coverage ?? []
+  const rows = activitySeries(analytics?.series ?? [], window, bucket, coverage)
+  const completed = coverage.reduce((total, row) => total + row.completed_exports, 0)
+  const expected = coverage.reduce((total, row) => total + row.expected_exports, 0)
   return (
     <section className="panel volume-panel">
       <PanelHeading title="Activity over time" subtitle={`Events per ${bucket} · UTC`} />
-      {rows.length ? (
+      {rows.some((row) => row.count !== null) ? (
         <div className="volume-chart" aria-label="Chart of events by UTC time bucket">
           <ResponsiveContainer width="100%" height="100%" minWidth={0}>
             <AreaChart data={rows} margin={{ left: 0, right: 14, top: 8, bottom: 0 }}>
@@ -28,11 +31,13 @@ export default function VolumeChart({ analytics, window, bucket, loading }: {
                 itemStyle={{ color: '#7bd2c6' }} />
               <Area type="linear" dataKey="count" stroke="#73d3c3" strokeWidth={2}
                 fill="#4ab9a1" fillOpacity={0.17} isAnimationActive={false}
-                dot={rows.length === 1 ? { r: 4, fill: '#73d3c3' } : false} />
+                dot={{ r: 2.5, fill: '#73d3c3', strokeWidth: 0 }} />
             </AreaChart>
           </ResponsiveContainer>
         </div>
-      ) : <p className="panel-empty">{loading ? 'Loading activity…' : analytics ? 'No activity in the selected window.' : 'Activity unavailable.'}</p>}
+      ) : <p className="panel-empty">{loading ? 'Loading activity…' : analytics ? 'No activity observations in the selected window.' : 'Activity unavailable.'}</p>}
+      {expected > 0 && <p className="coverage-note">{count(completed)} of {count(expected)} expected exports processed
+        {completed < expected && ' · Gaps show incomplete coverage'}</p>}
     </section>
   )
 }

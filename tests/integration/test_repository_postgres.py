@@ -5,10 +5,12 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
+from zipfile import BadZipFile
 import os
 
 import psycopg
 import pytest
+from requests import ConnectionError, HTTPError, Response
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
@@ -33,6 +35,7 @@ from src.ingestion.repository import (
     update_ingestion_run,
 )
 from src.ingestion.validation import validate_and_clean_event
+from src.pipeline import ingest_service, scheduled_ingest
 
 
 @pytest.fixture(scope="session")
@@ -311,6 +314,127 @@ def test_dashboard_freshness_distinguishes_source_and_completion(dashboard_clien
     pg_connection.execute("UPDATE ingestion_runs SET finished_at = NOW() - INTERVAL '2 hours'")
     assert dashboard_client.get("/freshness").json()["status"] == "ingestion_stale"
     assert dashboard_client.get("/health/ready").status_code == 503
+
+
+def test_dashboard_coverage_distinguishes_completed_failed_and_expired(dashboard_client, pg_connection):
+    start = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    for offset, status in ((0, "completed"), (15, "failed"), (30, "expired"), (60, "completed")):
+        slot = start + timedelta(minutes=offset)
+        insert_checkpoint(
+            pg_connection, source="gdelt_events_v2", export_time_utc=slot,
+            export_url="https://example.invalid/export", export_filename="export", status=status,
+        )
+    response = dashboard_client.get("/analytics", params={
+        "start": start.isoformat(), "end": (start + timedelta(hours=1)).isoformat(),
+        "country": "CA",
+    })
+    assert response.status_code == 200, response.text
+    assert response.json()["coverage"] == [{
+        "bucket_start": start.isoformat(), "expected_exports": 4, "completed_exports": 1,
+    }]
+
+
+def test_scheduled_sync_prioritizes_freshness_and_retries_partial_exports(pg_connection, monkeypatch):
+    now = datetime.now(timezone.utc)
+    latest = now.replace(minute=now.minute // 15 * 15, second=0, microsecond=0)
+    oldest = latest - timedelta(hours=1)
+    calls = []
+    first_attempt = True
+
+    def url(slot):
+        return f"{scheduled_ingest.ARCHIVE}{slot:%Y%m%d%H%M%S}.export.CSV.zip"
+
+    def rows(export_url, **_):
+        nonlocal first_attempt
+        slot = ingest_service.parse_export_metadata(export_url)["export_time_utc"]
+        calls.append(slot)
+        if slot == oldest and first_attempt:
+            response = Response()
+            response.status_code = 404
+            raise HTTPError(response=response)
+        yield {"GLOBALEVENTID": str(int(slot.timestamp())), "EventCode": "190"}
+        if slot == latest and first_attempt:
+            first_attempt = False
+            raise ConnectionError("interrupted after the first committed chunk")
+
+    monkeypatch.setenv("GDELT_LOOKBACK_HOURS", "1")
+    monkeypatch.setenv("GDELT_MAX_EXPORTS_PER_RUN", "2")
+    monkeypatch.setenv("GDELT_RETENTION_DAYS", "0")
+    monkeypatch.setattr(scheduled_ingest, "get_connection", lambda: nullcontext(pg_connection))
+    monkeypatch.setattr(scheduled_ingest, "get_latest_export_metadata", lambda: {
+        "export_time_utc": latest, "export_url": url(latest),
+    })
+    monkeypatch.setattr(ingest_service, "BATCH_SIZE", 1)
+    monkeypatch.setattr(ingest_service, "iter_export_rows", rows)
+
+    with pytest.raises(ConnectionError):
+        scheduled_ingest.sync_recent_exports()
+    assert calls == [oldest, latest]
+
+    scheduled_ingest.sync_recent_exports()
+    assert calls[-2:] == [oldest + timedelta(minutes=15), oldest + timedelta(minutes=30)]
+    pg_connection.execute("""
+        UPDATE gdelt_export_checkpoints
+        SET processing_started_at = NOW() - INTERVAL '1 hour' WHERE status = 'failed'
+    """)
+    scheduled_ingest.sync_recent_exports()
+    assert calls[-2:] == [oldest, latest]
+    scheduled_ingest.sync_recent_exports()
+    assert calls[-1] == latest - timedelta(minutes=15)
+    scheduled_ingest.sync_recent_exports()
+    assert len(calls) == 7
+
+    checkpoints = pg_connection.execute("""
+        SELECT status, attempt_count, row_count_duplicates FROM gdelt_export_checkpoints
+        ORDER BY export_time_utc
+    """).fetchall()
+    assert [row["status"] for row in checkpoints] == ["completed"] * 5
+    assert checkpoints[-1]["attempt_count"] == 2 and checkpoints[-1]["row_count_duplicates"] == 1
+    for table in ("raw_events", "normalized_events"):
+        assert pg_connection.execute(
+            psycopg.sql.SQL("SELECT count(*) AS count FROM {}").format(psycopg.sql.Identifier(table))
+        ).fetchone()["count"] == 5
+
+
+def test_scheduled_sync_skips_when_another_session_holds_lock(pg_connection, monkeypatch):
+    monkeypatch.setattr(scheduled_ingest, "get_connection", lambda: nullcontext(pg_connection))
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"], row_factory=psycopg.rows.dict_row) as other:
+        assert try_acquire_ingestion_lock(other)
+        monkeypatch.setattr(scheduled_ingest, "get_latest_export_metadata", lambda: pytest.fail("lock was bypassed"))
+        scheduled_ingest.sync_recent_exports()
+
+
+def test_fully_unparseable_export_is_failed_and_never_counted_as_coverage(pg_connection, monkeypatch):
+    def unreadable_rows(_url, *, on_parse_error):
+        on_parse_error("parse_error", {"row_number": 1, "row_length": 1})
+        return iter(())
+
+    monkeypatch.setattr(ingest_service, "iter_export_rows", unreadable_rows)
+    url = f"{scheduled_ingest.ARCHIVE}20260315000000.export.CSV.zip"
+    with pytest.raises(BadZipFile, match="only unparseable"):
+        ingest_service.ingest_export(url, connection=pg_connection)
+    assert pg_connection.execute("SELECT status FROM gdelt_export_checkpoints").fetchone()["status"] == "failed"
+    assert pg_connection.execute("SELECT count(*) AS count FROM dropped_events").fetchone()["count"] == 1
+
+
+def test_retention_expires_coverage_and_prunes_detail_in_bounded_batches(pg_connection):
+    run_id = uuid4()
+    insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+    recent = datetime.now(timezone.utc)
+    old = recent - timedelta(days=20)
+    rows = [dict(_build_event(run_id, key), export_time_utc=slot)
+            for key, slot in (("old-one", old), ("old-two", old), ("recent", recent))]
+    insert_raw_and_normalized_batch(pg_connection, rows)
+    for slot in (old, recent):
+        insert_checkpoint(pg_connection, "gdelt_events_v2", slot, "https://example.invalid/export", "export", "completed")
+    assert scheduled_ingest.prune_history(pg_connection, 17, limit=1) == 1
+    assert scheduled_ingest.prune_history(pg_connection, 17, limit=1) == 1
+    assert scheduled_ingest.prune_history(pg_connection, 17, limit=1) == 0
+    assert pg_connection.execute("SELECT count(*) AS count FROM normalized_events").fetchone()["count"] == 1
+    assert pg_connection.execute("SELECT dedupe_key FROM raw_events").fetchone()["dedupe_key"] == "recent"
+    states = pg_connection.execute("SELECT status FROM gdelt_export_checkpoints ORDER BY export_time_utc").fetchall()
+    assert states == [{"status": "expired"}, {"status": "completed"}]
+
 
 
 def test_ingestion_run_and_checkpoint_creation(pg_connection):

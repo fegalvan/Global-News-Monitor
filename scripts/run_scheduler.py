@@ -7,9 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-CMD = [sys.executable, "-u", "-m", "src.main", "ingest"]
+CMD = [sys.executable, "-u", "-m", "src.main", "sync"]
 INTERVAL_SECONDS = 15 * 60
-TIMEOUT_SECONDS = 30 * 60
+TIMEOUT_SECONDS = 12 * 60
 
 
 def run_once() -> None:

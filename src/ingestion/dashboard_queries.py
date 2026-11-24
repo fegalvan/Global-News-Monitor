@@ -101,12 +101,26 @@ def fetch_analytics(connection, filters: EventFilters, *, bucket: str):
             GROUP BY 1, 2
             ORDER BY count DESC, latitude, longitude
             LIMIT %s
+        ),
+        coverage AS (
+            SELECT date_trunc(%s, slot AT TIME ZONE 'UTC') AS bucket_start,
+                   count(*) AS expected_exports,
+                   count(*) FILTER (WHERE c.status = 'completed') AS completed_exports
+            FROM generate_series(
+                date_bin(INTERVAL '15 minutes', %s::timestamptz, TIMESTAMPTZ '2000-01-01 00:00:00+00'),
+                %s::timestamptz, INTERVAL '15 minutes'
+            ) AS slots(slot)
+            LEFT JOIN gdelt_export_checkpoints c
+                ON c.source = %s AND c.export_time_utc = slot
+            WHERE slot >= %s AND slot < %s
+            GROUP BY 1
         )
         SELECT
             (SELECT count(*) FROM filtered) AS total_events,
             (SELECT count(*) FROM filtered WHERE geolocated) AS geolocated_events,
             (SELECT count(DISTINCT country_code) FROM filtered) AS countries_with_events,
             (SELECT COALESCE(json_agg(series ORDER BY bucket_start), '[]') FROM series) AS series,
+            (SELECT COALESCE(json_agg(coverage ORDER BY bucket_start), '[]') FROM coverage) AS coverage,
             (SELECT COALESCE(json_agg(countries ORDER BY count DESC, country_code), '[]') FROM countries)
                 AS country_counts,
             (SELECT COALESCE(json_agg(categories ORDER BY count DESC, primary_category), '[]') FROM categories)
@@ -114,7 +128,8 @@ def fetch_analytics(connection, filters: EventFilters, *, bucket: str):
             (SELECT COALESCE(json_agg(cells ORDER BY count DESC, latitude, longitude), '[]') FROM cells)
                 AS map_cells
         """,
-        (*params, bucket, COUNTRY_LIMIT, MAP_CELL_LIMIT),
+        (*params, bucket, COUNTRY_LIMIT, MAP_CELL_LIMIT,
+         bucket, filters.start, filters.end, SOURCE, filters.start, filters.end),
     )
 
 

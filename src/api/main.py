@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from decimal import Decimal
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
+from psycopg import Error as DatabaseError
 
 from src.api.dashboard import DashboardFilters, router as dashboard_router
 from src.db import get_connection
@@ -18,6 +20,12 @@ from src.main import (
 
 app = FastAPI(title="Global News Monitor API")
 app.include_router(dashboard_router)
+
+
+@app.exception_handler(DatabaseError)
+def database_error(request: Request, exc: DatabaseError) -> JSONResponse:
+    logging.getLogger(__name__).warning("database_request_failed type=%s path=%s", type(exc).__name__, request.url.path)
+    return JSONResponse(status_code=503, content={"detail": "Database temporarily unavailable"})
 
 
 def indicator_rows(rows: list[dict]) -> list[dict]:

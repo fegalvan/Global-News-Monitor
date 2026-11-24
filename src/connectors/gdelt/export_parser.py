@@ -80,7 +80,7 @@ def iter_zip_csv_rows(
     with zipfile.ZipFile(zip_stream) as zipped_file:
         csv_names = [name for name in zipped_file.namelist() if name.endswith(".CSV")]
         if not csv_names:
-            raise ValueError("no csv file found inside the gdelt export zip")
+            raise zipfile.BadZipFile("no csv file found inside the gdelt export zip")
 
         with zipped_file.open(csv_names[0], "r") as csv_file:
             text_stream = io.TextIOWrapper(csv_file, encoding="utf-8", newline="")

@@ -153,7 +153,8 @@ export function Indicators({ spikes, tension, loading, hours }: {
         ) : <Empty>{loading && !spikes ? 'Loading spike candidates…' : !spikes || spikes.unavailable
           ? 'Spike indicator unavailable.' : hours >= 360 ? 'This window leaves no days in the 15-day baseline.'
             : 'No candidates. Spikes require at least 10 events and a matching historical baseline.'}</Empty>}
-        {hours !== 24 && hours < 360 && <p className="indicator-note">The daily baseline is easiest to interpret with a 24-hour window.</p>}
+        <p className="indicator-note">Sparse coverage can skew the baseline.
+          {hours !== 24 && hours < 360 && ' Use a 24-hour window to compare equal durations.'}</p>
       </section>
       <section className="panel">
         <PanelHeading title="Tension indicator" subtitle="Actor groups by Goldstein scale · events scoring −5 or below" />
