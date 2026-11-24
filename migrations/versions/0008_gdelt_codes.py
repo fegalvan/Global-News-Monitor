@@ -15,6 +15,7 @@ depends_on = None
 
 
 def upgrade() -> None:
+    op.execute("LOCK TABLE raw_events, normalized_events IN SHARE ROW EXCLUSIVE MODE")
     op.create_table(
         "gdelt_geo_countries",
         sa.Column("code", sa.Text(), primary_key=True),

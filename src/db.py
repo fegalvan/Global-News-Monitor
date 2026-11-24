@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg.pq import TransactionStatus
 
 
 def load_database_url() -> str:
@@ -51,6 +52,17 @@ def transaction(connection: psycopg.Connection) -> Iterator[psycopg.Connection]:
 
     with connection.transaction():
         yield connection
+
+
+@contextmanager
+def read_snapshot(connection: psycopg.Connection) -> Iterator[None]:
+    """Read related queries from the same database snapshot."""
+    if connection.info.transaction_status != TransactionStatus.IDLE:
+        yield
+        return
+    with connection.transaction():
+        connection.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+        yield
 
 
 def fetch_one(

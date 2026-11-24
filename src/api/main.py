@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from decimal import Decimal
+from time import perf_counter
 
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
@@ -10,6 +12,7 @@ from psycopg import Error as DatabaseError
 from src.api.dashboard import DashboardFilters, router as dashboard_router
 from src.db import get_connection
 from src.ingestion.repository import fetch_spike_rows, fetch_tension_rows
+from src.pipeline.monitoring import internal_health
 from src.main import (
     get_latest_payload,
     get_readiness_payload,
@@ -20,6 +23,21 @@ from src.main import (
 
 app = FastAPI(title="Global News Monitor API")
 app.include_router(dashboard_router)
+logger = logging.getLogger("uvicorn.error")
+TIMED_ROUTES = {"/analytics", "/events", "/history", "/map", "/country-profile", "/health/monitor"}
+
+
+@app.middleware("http")
+async def time_dashboard_requests(request: Request, call_next):
+    if request.url.path not in TIMED_ROUTES:
+        return await call_next(request)
+    start = perf_counter()
+    response = await call_next(request)
+    elapsed_ms = 1000 * (perf_counter() - start)
+    response.headers["Server-Timing"] = f"app;dur={elapsed_ms:.1f}"
+    logger.info("dashboard_request path=%s status=%d elapsed_ms=%.1f",
+                request.url.path, response.status_code, elapsed_ms)
+    return response
 
 
 @app.exception_handler(DatabaseError)
@@ -39,6 +57,12 @@ def indicator_rows(rows: list[dict]) -> list[dict]:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/health/monitor")
+def monitor():
+    with get_connection() as connection:
+        return internal_health(connection, datetime.now(timezone.utc))
 
 
 @app.get("/health/ready")

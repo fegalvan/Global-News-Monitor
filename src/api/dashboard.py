@@ -8,14 +8,18 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import AwareDatetime, BeforeValidator
 
-from src.db import get_connection
+from src.db import get_connection, read_snapshot
 from src.ingestion.dashboard_queries import (
     EventFilters,
     fetch_analytics,
     fetch_events,
     fetch_freshness,
+    fetch_profile_details,
+    fetch_viewport,
 )
+from src.ingestion.history_queries import fetch_history
 from src.main import get_event_label
+from src.utils.country_mapping import COUNTRY_NAME_BY_CODE
 
 router = APIRouter()
 Category = Literal["conflict", "protest", "politics", "diplomacy", "economics", "cyber", "crisis"]
@@ -106,15 +110,15 @@ def events(
 
 
 @router.get("/analytics")
-def analytics(params: DashboardFilters, bucket: Literal["hour", "day"] = "hour"):
+def analytics(params: DashboardFilters, bucket: Literal["hour", "day"] = "hour", include_map: bool = True):
     filters = params.window()
-    with get_connection() as connection:
-        result = fetch_analytics(connection, filters, bucket=bucket)
+    with get_connection() as connection, read_snapshot(connection):
+        result = fetch_analytics(connection, filters, bucket=bucket, include_map=include_map)
 
     series = result.pop("series")
     coverage = result.pop("coverage")
     for row in series + coverage:
-        row["bucket_start"] = datetime.fromisoformat(row["bucket_start"]).replace(tzinfo=timezone.utc)
+        row["bucket_start"] = row["bucket_start"].replace(tzinfo=timezone.utc)
     map_cells = result.pop("map_cells")
     country_counts = result.pop("country_counts")
     category_counts = result.pop("category_counts")
@@ -132,7 +136,68 @@ def analytics(params: DashboardFilters, bucket: Literal["hour", "day"] = "hour")
             "cell_degrees": 2,
             "cells": map_cells,
             "omitted_events": result["geolocated_events"] - mapped,
-        },
+        } if include_map else None,
+    }
+
+
+@router.get("/countries")
+def countries():
+    return {"rows": [
+        {"country_code": code, "country_name": name}
+        for code, name in sorted(COUNTRY_NAME_BY_CODE.items(), key=lambda item: (item[1], item[0]))
+    ]}
+
+
+@router.get("/country-profile")
+def country_profile(params: DashboardFilters):
+    filters = params.window()
+    if filters.country not in COUNTRY_NAME_BY_CODE:
+        raise HTTPException(422, "Select a mapped GDELT geographic country.")
+    with get_connection() as connection:
+        rows = fetch_profile_details(connection, filters)
+    return {
+        "country_code": filters.country,
+        "country_name": COUNTRY_NAME_BY_CODE[filters.country],
+        "locations": [{"label": row["label"], "count": row["count"]} for row in rows if row["locations"]],
+        "sources": [{"label": row["label"], "count": row["count"]} for row in rows if not row["locations"]],
+    }
+
+
+@router.get("/history")
+def history(params: DashboardFilters):
+    filters = params.window()
+    with get_connection() as connection, read_snapshot(connection):
+        return fetch_history(connection, filters.end, filters.country, filters.category)
+
+
+def grid_resolution(south: float, west: float, north: float, east: float) -> float:
+    width = east - west if east >= west else 360 + east - west
+    for degrees in (0.25, 0.5, 1, 2, 5, 10, 15, 20, 30):
+        # Two extra rows and three columns cover edges and a split at ±180°.
+        if ((north - south) / degrees + 2) * (width / degrees + 3) <= 600:
+            return degrees
+    return 30
+
+
+@router.get("/map")
+def viewport_map(
+    params: DashboardFilters,
+    south: Annotated[float, Query(ge=-90, le=90)] = -90,
+    west: Annotated[float, Query(ge=-180, le=180)] = -180,
+    north: Annotated[float, Query(ge=-90, le=90)] = 90,
+    east: Annotated[float, Query(ge=-180, le=180)] = 180,
+):
+    if south >= north or west == east or (west == 180 and east == -180):
+        raise HTTPException(422, "Provide a non-empty viewport.")
+    filters = params.window()
+    bounds = south, west, north, east
+    degrees = grid_resolution(*bounds)
+    with get_connection() as connection:
+        cells = fetch_viewport(connection, filters, bounds, degrees)
+    return {
+        "cell_degrees": degrees, "cells": cells,
+        "viewport_events": sum(cell["count"] for cell in cells),
+        "omitted_events": 0,
     }
 
 

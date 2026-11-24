@@ -13,6 +13,7 @@ import pytest
 from requests import ConnectionError, HTTPError, Response
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 
 from src.api.main import app
@@ -61,7 +62,9 @@ def clean_tables(pg_connection):
     with pg_connection.transaction(force_rollback=True):
         with pg_connection.cursor() as cursor:
             cursor.execute(
-                "TRUNCATE TABLE dropped_events, data_quality_audit, normalized_events, raw_events, gdelt_export_checkpoints, ingestion_runs RESTART IDENTITY CASCADE"
+                "TRUNCATE TABLE dropped_events, data_quality_audit, normalized_events, raw_events, "
+                "gdelt_export_checkpoints, ingestion_runs, event_hourly_counts, event_history_coverage, "
+                "scheduler_health RESTART IDENTITY CASCADE"
             )
         yield
 
@@ -69,7 +72,7 @@ def clean_tables(pg_connection):
 def test_migrations_reach_head(pg_connection):
     with pg_connection.cursor() as cursor:
         cursor.execute("SELECT version_num FROM alembic_version")
-        assert cursor.fetchone()["version_num"] == "0007_idempotency_hardening"
+        assert cursor.fetchone()["version_num"] == ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
         cursor.execute(
             """
             SELECT character_maximum_length
@@ -610,3 +613,81 @@ def test_advisory_lock_prevents_parallel_ingest(pg_connection):
         assert release_ingestion_lock(pg_connection) is True
         assert try_acquire_ingestion_lock(second_connection) is True
         assert release_ingestion_lock(second_connection) is True
+
+
+def test_hourly_counts_match_raw_at_unaligned_edges(dashboard_client, pg_connection, dashboard_window):
+    params = {**dashboard_window, "start": "2026-03-15T00:00:00.000001Z",
+              "end": "2026-03-15T01:30:00Z", "include_map": "false"}
+    payload = dashboard_client.get("/analytics", params=params).json()
+    events = dashboard_client.get("/events", params=params).json()["rows"]
+    assert payload["summary"]["total_events"] == len(events)
+    assert payload["map"] is None
+    params["start"] = "2026-03-15T00:10:00Z"
+    params["end"] = "2026-03-15T00:40:00Z"
+    assert dashboard_client.get("/analytics", params=params).json()["summary"]["total_events"] == len(
+        dashboard_client.get("/events", params=params).json()["rows"],
+    )
+
+
+def test_rollup_tracks_duplicates_updates_and_transaction_rollback(pg_connection):
+    run_id = uuid4()
+    insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+    event = _build_event(run_id, "rollup")
+    assert insert_raw_and_normalized_batch(pg_connection, [event, event]) == (1, 1)
+    assert insert_raw_and_normalized_batch(pg_connection, [event]) == (0, 0)
+    with pg_connection.transaction(force_rollback=True):
+        insert_raw_and_normalized_batch(pg_connection, [dict(event, dedupe_key="aborted")])
+    pg_connection.execute("UPDATE normalized_events SET country_code='CA', country_name='Canada'")
+    counts = pg_connection.execute(
+        "SELECT country_code, live_count, historical_count FROM event_hourly_counts ORDER BY country_code",
+    ).fetchall()
+    assert counts == [
+        {"country_code": "CA", "live_count": 1, "historical_count": 1},
+        {"country_code": "USA", "live_count": 0, "historical_count": 0},
+    ]
+
+
+def test_history_counts_complete_zero_and_keeps_completed_coverage(dashboard_client, pg_connection):
+    end = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    pg_connection.execute("""
+        INSERT INTO gdelt_export_checkpoints (source, export_time_utc, export_url, export_filename, status)
+        SELECT 'gdelt_events_v2', stamp, 'example', 'example', 'completed'
+        FROM generate_series(%s::timestamptz - interval '48 hours',
+            %s::timestamptz - interval '15 minutes', interval '15 minutes') stamp
+    """, (end, end))
+    pg_connection.execute("UPDATE gdelt_export_checkpoints SET status='expired'")
+    body = dashboard_client.get("/history", params={"end": end.isoformat(), "country": "US"}).json()
+    assert body["comparison_24h"]["absolute_change"] == 0
+    assert body["comparison_24h"]["percent_change"] is None
+    assert body["comparison_7d"]["absolute_change"] is None
+    assert body["anomaly"]["status"] == "insufficient_history"
+    assert body["daily"][-1]["count"] == 0
+    assert body["daily"][-3]["count"] is None
+
+
+def test_map_and_profile_endpoints_are_bounded(dashboard_client, dashboard_window):
+    globe = dashboard_client.get("/map", params=dashboard_window).json()
+    assert globe["viewport_events"] == 4
+    assert sum(cell["count"] for cell in globe["cells"]) == 4
+    assert globe["omitted_events"] == 0
+    split = dashboard_client.get("/map", params={**dashboard_window, "west": 170, "east": -170}).json()
+    assert split["viewport_events"] == 1
+    assert dashboard_client.get("/map", params={"south": 60, "north": 40}).status_code == 422
+    profile = dashboard_client.get("/country-profile", params={**dashboard_window, "country": "CA"})
+    assert profile.status_code == 200, profile.text
+    assert profile.json()["country_name"] == "Canada"
+    assert dashboard_client.get("/country-profile", params=dashboard_window).status_code == 422
+    catalog = dashboard_client.get("/countries").json()["rows"]
+    assert {"country_code": "GB", "country_name": "Gabon"} in catalog
+
+
+def test_health_monitor_counts_missing_and_reports_scheduler(dashboard_client, pg_connection, monkeypatch):
+    from src.api import main as api
+    monkeypatch.setattr(api, "get_connection", lambda: nullcontext(pg_connection))
+    response = dashboard_client.get("/health/monitor")
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "degraded"
+    assert "scheduler_stale" in response.json()["issues"]
+    assert response.json()["coverage"]["missing"] == 96
+    assert len(response.json()["coverage"]["latest_gaps"]) == 8
+    assert response.headers["server-timing"].startswith("app;dur=")

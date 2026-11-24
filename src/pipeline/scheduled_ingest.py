@@ -76,7 +76,9 @@ def prune_history(connection: Connection, keep_days: int, *, limit: int = 10_000
             )
         ]
         if ids:
+            connection.execute("SET LOCAL gnm.retention_cleanup = 'on'")
             connection.execute("DELETE FROM normalized_events WHERE raw_event_id = ANY(%s)", (ids,))
+            connection.execute("SET LOCAL gnm.retention_cleanup = 'off'")
             connection.execute("DELETE FROM raw_events WHERE id = ANY(%s)", (ids,))
         connection.execute(
             """
@@ -140,6 +142,7 @@ def sync_recent_exports() -> None:
                 removed = prune_history(connection, keep_days)
                 if removed:
                     logger.info("scheduled_retention_pruned raw_records=%s", removed)
+            connection.execute("SELECT prune_event_history()")
         finally:
             if not connection.closed:
                 release_ingestion_lock(connection)

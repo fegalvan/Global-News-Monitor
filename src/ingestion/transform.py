@@ -76,7 +76,8 @@ def _parse_int(value: Any) -> int | None:
         return None
 
     try:
-        return int(text)
+        parsed = int(text)
+        return parsed if 0 < parsed < 2**63 else None
     except ValueError:
         return None
 
@@ -121,6 +122,9 @@ def normalize_event_for_insert(
     if event_time_utc is None:
         event_time_utc = export_time_utc
     source_url = _clean_text(event.get("SOURCEURL"))
+    goldstein = _parse_decimal(event.get("GoldsteinScale"))
+    if goldstein is not None and not -10 <= goldstein <= 10:
+        goldstein = None
     category_result = categorize_event(
         {
             "event_code": normalize_event_code(event.get("EventCode")),
@@ -149,7 +153,7 @@ def normalize_event_for_insert(
         "action_geo_lat": _parse_decimal(event.get("ActionGeo_Lat")),
         "action_geo_long": _parse_decimal(event.get("ActionGeo_Long")),
         "avg_tone": _parse_decimal(event.get("AvgTone")),
-        "goldstein_score": _parse_decimal(event.get("GoldsteinScale")),
+        "goldstein_score": goldstein,
         "source_url": source_url,
         "primary_category": category_result.primary_category,
         "secondary_category": category_result.secondary_category,

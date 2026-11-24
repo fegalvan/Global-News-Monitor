@@ -138,7 +138,7 @@ def _ingest_export(export_url: str, connection, trigger_mode: str) -> dict[str, 
             checkpoint["status"],
         )
 
-        if checkpoint["status"] == "completed":
+        if checkpoint["status"] in {"completed", "expired"}:
             with transaction(connection):
                 update_ingestion_run(
                     connection=connection,
@@ -152,9 +152,10 @@ def _ingest_export(export_url: str, connection, trigger_mode: str) -> dict[str, 
                 )
 
             logger.info(
-                "checkpoint_status_changed source=%s export_filename=%s new_status=completed outcome=already_completed",
+                "checkpoint_observed source=%s export_filename=%s checkpoint_status=%s outcome=already_processed",
                 checkpoint_source,
                 export_filename,
+                checkpoint["status"],
             )
             return {
                 "run_id": str(run_id),
