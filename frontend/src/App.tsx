@@ -30,7 +30,7 @@ export default function App() {
   const window = useMemo(
     () => mode === 'custom' && custom ? custom : liveWindow(mode === '7' ? 7 : 1, exportTime),
     // Manual refresh resolves a new live window even when the export is unchanged.
-    [mode, custom, exportTime, refresh, freshness.checked],
+    [mode, custom, exportTime, refresh, freshness.checked, freshness.error],
   )
   const hours = (Date.parse(window.end) - Date.parse(window.start)) / 3_600_000
   const bucket: Bucket = hours <= 48 ? 'hour' : 'day'

@@ -72,7 +72,7 @@ export function useDashboard(filters: Filters, bucket: Bucket, scope: string, en
   const [pageFailedKey, setPageFailedKey] = useState<string | null>(null)
   const [loadingPage, setLoadingPage] = useState(false)
   const pageRequest = useRef<AbortController | null>(null)
-  const countries = useResource<{ rows: Country[] }>('/countries').data?.rows ?? NO_COUNTRIES
+  const countries = useResource<{ rows: Country[] }>('/countries', refresh).data?.rows ?? NO_COUNTRIES
   const { start, end, country, category } = filters
   const key = JSON.stringify([start, end, country, category, bucket, refresh])
 
