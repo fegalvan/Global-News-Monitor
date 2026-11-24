@@ -351,7 +351,24 @@ temporary work files. Record Azure Storage Used and WAL usage before the
 migration. Leave several GiB of headroom above the expected table size.
 Production rehearsal and image approval come before rollout.
 
+The current v1.1 cutover used the existing Compose project named `app`.
+Its scanned source bundle is in the VM's
+`/home/gnmops/gnm-deploy/candidates/410b11b/src`. The previous Compose
+configuration and protected runtime environment remain in the original
+`app` directory. Use the candidate Compose files and original runtime
+environment for live v1.1 operations. See the
+[validation report](V1.1_VALIDATION.md) for the exact image IDs, recovery
+rehearsal, and measured release results.
+
 ### Prepare and apply
+
+Confirm the existing administrator login before starting a maintenance
+window. The runtime role files are for the API and scheduler. Keep any
+administrator credential in approved protected storage and out of terminal
+output, Git, and application configuration. A reset requires separate
+approval and invalidates the previous password for the administrator.
+Check that the API and scheduler still authenticate under their own roles
+after any approved reset. [Microsoft administrator password reset procedure](https://learn.microsoft.com/en-us/azure/postgresql/security/security-reset-admin-password)
 
 1. Build v1.1 backend and Caddy/frontend images off the VM where practical.
    Scan the exact candidate image digests. On the VM record the current
@@ -359,9 +376,11 @@ Production rehearsal and image approval come before rollout.
    loading new images. Validate the production Compose overlay using
    `config --quiet`. Save the v1.0 Compose files for rollback.
 2. Confirm a usable Flexible Server backup and record the UTC recovery
-   point before migration. If an additional logical backup is needed,
-   stream it off the VM over SSH to approved storage. Protect database
-   credentials and backup contents as you would the existing runtime secrets.
+   point before migration. Use a PostgreSQL 17 client for any logical dump
+   of the PostgreSQL 17 server. The VM's stock client is PostgreSQL 16.
+   Keep a protected pre-migration dump and verify a restore to an isolated
+   database before changing production. A managed restore would use a
+   separate server, so obtain approval before provisioning one.
 3. Stop the scheduler using the same `-p app`, environment file, and overlay
    used at deployment. Allow any manual ingest to finish before migration.
    Keep the v1.0 API serving during this step. The migration takes write
@@ -381,6 +400,14 @@ Production rehearsal and image approval come before rollout.
    historical coverage, country profile, and map. Watch two scheduler cycles.
    Confirm a new archive slot, compare coverage and response times, and
    look for database errors and unexpected restarts.
+
+Record the source slot and the retained event-count range before the
+change. Afterward verify each completed export's coverage, compare hourly
+rollups against raw rows for a fixed retained window, and check new
+checkpoints across two consecutive automatic cycles. Record the same
+HTTP windows before and after deployment. Compare the v1.0 analytics
+request to the compatibility response first, then measure the v1.1
+summary, viewport, history, and profile requests separately.
 
 Example migration commands, with the backend candidate already saved under
 its release tag and the owner URL exported privately as `DATABASE_URL`:

@@ -4,9 +4,9 @@ Global News Monitor ingests structured GDELT event exports into PostgreSQL and s
 
 **Live dashboard:** [Global News Monitor](https://global-news-monitor.northcentralus.cloudapp.azure.com/)
 
-![Global News Monitor desktop dashboard showing regional activity and source coverage](docs/dashboard-desktop.jpg)
+![Global News Monitor v1.1 production map showing all occupied two-degree cells](docs/map-v11-production.png)
 
-The production screenshot shows 9,174 GDELT records with 14 of 96 expected exports in the selected 24-hour window during initial catch-up. The coverage count distinguishes gaps from observed zero activity. [Mobile event feed](docs/dashboard-mobile.jpg) · [Deployment guide](docs/DEPLOYMENT.md#azure-production-deployment) · [Technical walkthrough](docs/TECHNICAL_WALKTHROUGH.md)
+The production map shows 111,007 geolocated records in a fixed 24-hour window. The footer accounts for every coordinate in view. [v1.0 map comparison](docs/map-v10-production.png) · [Deployment guide](docs/DEPLOYMENT.md#azure-production-deployment) · [Technical walkthrough](docs/TECHNICAL_WALKTHROUGH.md)
 
 ## v1.1 dashboard
 
@@ -19,7 +19,7 @@ The production screenshot shows 9,174 GDELT records with 14 of 96 expected expor
 - GDELT counts describe machine-coded reporting. Coverage can be incomplete,
   skewed by source availability, and affected by repeated stories or classification errors.
 
-The public deployment remains v1.0 pending review. See the
+The public deployment runs v1.1. See the
 [monitoring and release runbook](docs/DEPLOYMENT.md#v11-migration-and-rollback)
 for rollout, the [technical walkthrough](docs/TECHNICAL_WALKTHROUGH.md#v11-data-and-query-architecture)
 for the methods, and the [validation report](docs/V1.1_VALIDATION.md) for measurements.
@@ -271,18 +271,19 @@ and writes the static site to `frontend/dist/`.
   at a time and resets when the selection changes.
 - The dashboard checks freshness every minute while the tab is visible.
   A newly processed export refreshes the rolling windows together. Custom
-  ranges remain fixed and can be refreshed manually. Source export,
-  ingestion completion, reported event date, and frontend refresh are shown
-  separately.
-- The map requests the viewport after a zoom or pan. It coarsens the grid
-  when needed to fit at most 600 cells and allocates every valid location in
-  the viewport to one cell. Use the country selector for places without a
+  ranges remain fixed and can be refreshed manually. GDELT's batch filename
+  supplies its scheduled slot. The dashboard shows when GNM ingested that
+  particular batch separately. A batch can be available before its slot.
+- The world map uses two-degree cells and draws every occupied cell on a
+  canvas. Zooming into a smaller viewport selects one-, half-, or
+  quarter-degree cells. Every valid location in the viewport is counted.
+  Use the country selector for places without a
   matching Natural Earth boundary. Event details show source geographic precision
   when available, including country, administrative area, or locality.
-- The activity chart shows the number of completed source exports in the
-  window. A bucket without matching events shows zero when all its expected
-  exports completed. An empty bucket with incomplete coverage is left blank.
-  Counts in partially observed buckets reflect the records available.
+- The activity chart plots complete UTC hours or days with every expected
+  export present. A complete bucket without matching events shows zero.
+  Missing exports and partial edge buckets leave gaps. The event feed and
+  totals still include the records available across the entire selection.
 
 ## API Endpoints
 

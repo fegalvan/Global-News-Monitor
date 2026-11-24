@@ -156,17 +156,25 @@ shows an error message. History, map, and profile details have independent
 loading and error states.
 
 [`ActivityMap.tsx`](../frontend/src/ActivityMap.tsx) renders bundled Natural
-Earth boundaries and viewport cells using Leaflet. Country
+Earth boundaries in Leaflet and draws occupied cells on one canvas. The
+canvas sits above the geography and leaves pointer clicks available to
+the country boundaries. A coordinate-based lookup supplies the cell tooltip.
+Five fixed count bands use progressively brighter colors so the same count
+looks consistent across time windows and viewport sizes. Country
 clicks resolve to a GDELT code only where the boundary name can be matched.
 [`mapGeometry.ts`](../frontend/src/mapGeometry.ts) unwraps polygons at the
 antimeridian to avoid lines across the entire map. The chart component uses
-Recharts. It plots returned observations, shows zero for an empty bucket
-with every expected export completed, and leaves a gap for an empty bucket
-with incomplete coverage. A positive count can still be partial.
+Recharts. It plots only full UTC buckets with all expected source slots
+completed, even if a partial bucket contains events. This prevents a final
+15-minute slice from reading like a drop in the hourly activity rate.
+Fully covered buckets with no matching reports show zero.
 
 The browser checks freshness once a minute while visible. A new processed
-source export moves the rolling window as a unit. An ahead-of-clock source
-timestamp extends the exclusive end just enough to include that export.
+source export moves the rolling window as a unit. The file's timestamp
+identifies its batch slot and the checkpoint records the wall-clock ingestion
+completion. GDELT can publish a batch before its filename timestamp.
+An ahead-of-clock source slot extends the exclusive end just enough to include
+that batch without labeling the containing chart bucket complete.
 Custom ranges stay fixed. An event link is rendered only for an HTTP(S)
 source URL.
 
@@ -303,7 +311,10 @@ the requested extent while keeping the maximum cell count bounded. With
 `west > east` the viewport crosses the antimeridian. Countries can be chosen
 directly from available map boundaries or from the FIPS catalogue. The
 viewport map scans matching raw rows, using a partial time index that includes
-latitude and longitude where both coordinates exist. The compatibility response from
+latitude and longitude where both coordinates exist. The world grid has
+90 × 180 possible two-degree cells. Smaller extents use finer grids at
+one, one half, or one quarter degree within a bounded response size.
+Each occupied cell contributes to the viewport total. The compatibility response from
 `/analytics` still offers its original two-degree grid when requested.
 
 ### Compare equal periods and gate the score on coverage
