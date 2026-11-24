@@ -2,7 +2,11 @@
 
 Global News Monitor ingests structured GDELT event exports into PostgreSQL and serves an interactive dashboard through FastAPI and React. Explore coded event activity by country, category, and time, and inspect the source references behind individual records.
 
-The project is designed as a production-aware ingestion service rather than a one-off script. It includes checkpointing, retry logic, idempotent inserts, single-run protection, dropped-row auditing, and readiness checks for API consumers.
+**Deployment status:** Local verification is complete. Public hosting is pending a hosting choice and account authorization.
+
+![Global News Monitor desktop dashboard showing regional activity and source coverage](docs/dashboard-desktop.jpg)
+
+The screenshot shows 31,989 real GDELT records in a 24-hour selection with 25 of 96 expected exports present. [Mobile event feed](docs/dashboard-mobile.jpg) · [Deployment guide and cost comparison](docs/DEPLOYMENT.md) · [Technical walkthrough](docs/TECHNICAL_WALKTHROUGH.md)
 
 ## Project Overview
 
@@ -29,12 +33,20 @@ It also exposes:
 
 ## Architecture
 
+| Layer | Technology |
+| --- | --- |
+| Collection and ETL | Python, Requests, Tenacity |
+| Storage and migrations | PostgreSQL, PostGIS, psycopg, SQLAlchemy, Alembic |
+| Read API | FastAPI, Uvicorn |
+| Interface | React, TypeScript, Vite, Leaflet, Recharts |
+| Deployment templates | Docker Compose with Caddy, or Render with a Vercel static frontend |
+
 High-level flow:
 
 ```mermaid
 flowchart LR
     A["Scheduler / CLI"] --> B["Ingest Service"]
-    B --> C["Fetch latest export metadata"]
+    B --> C["Plan missing exports from GDELT & checkpoints"]
     C --> D["Download and parse GDELT export"]
     D --> E["Normalize + validate rows"]
     E --> F["Categorize events"]
@@ -52,6 +64,7 @@ Core modules:
 
 - `src/connectors/gdelt/`: fetch and parse GDELT exports
 - `src/pipeline/ingest_service.py`: orchestration, metrics, and checkpoint flow
+- `src/pipeline/scheduled_ingest.py`: bounded catch-up, retries by checkpoint, and optional retention
 - `src/ingestion/transform.py`: normalization and dedupe key generation
 - `src/ingestion/validation.py`: validation and cleanup rules
 - `src/ingestion/repository.py`: database persistence and query helpers
@@ -173,8 +186,13 @@ python scripts/run_scheduler.py
 
 Run the scheduler as a separate process from the API. It starts an ingest
 immediately and targets a 15-minute interval between starts. It processes one
-export at a time and continues polling after a failed or timed-out run.
-It polls the latest export, so missed intervals are not automatically backfilled.
+export at a time and continues polling after a failed or timed-out run. A
+single scheduled pass is available with `python -m src.main sync`. By default
+it checks the previous 24 hours and attempts up to eight missing or retryable
+exports, reserving room for the newest eligible file. A PostgreSQL advisory
+lock serializes the entire pass with other ingests. Failed checkpoints cool
+down before retry, and slots beyond the lookback stay as visible coverage gaps.
+The original `ingest` command still processes only the latest export.
 
 ## Run the dashboard locally
 
@@ -241,10 +259,10 @@ and writes the static site to `frontend/dist/`.
   name. Use the country filter for codes with ambiguous names or missing
   boundaries. Geographic coverage can be partial, and the map reports events
   outside its 500 busiest cells.
-- Coverage depends on the exports collected in the database. A new or
-  interrupted collector can have empty chart buckets or too little history
-  for spike candidates. The dashboard labels these cases and shows stale data
-  or API outages separately.
+- The activity chart shows the number of completed source exports in the
+  window. A bucket without matching events shows zero when all its expected
+  exports completed. An empty bucket with incomplete coverage is left blank.
+  Counts in partially observed buckets reflect the records available.
 
 ## API Endpoints
 
@@ -274,7 +292,7 @@ classification labels and source links as references to the reporting used by GD
 | Endpoint | Parameters | Response |
 | --- | --- | --- |
 | `GET /events` | Shared filters, `limit` (1–200, default 50), `before_time` and `before_id` | `filters`, `limit`, `rows`, `next_cursor` |
-| `GET /analytics` | Shared filters, `bucket=hour\|day` (default `hour`) | `filters`, `bucket`, `summary`, `series`, `country_counts`, `country_counts_truncated`, `category_counts`, `map` |
+| `GET /analytics` | Shared filters, `bucket=hour\|day` (default `hour`) | `filters`, `bucket`, `summary`, `series`, `coverage`, `country_counts`, `country_counts_truncated`, `category_counts`, `map` |
 | `GET /freshness` | `max_age_minutes` (1–1440, default 60) | Source, ingestion, and event timestamps plus a status |
 | `GET /spikes` | Shared filters optional, `hours` (1–720, default 24) | `rows` with resolved `filters`, or `hours` in the legacy form |
 | `GET /tension` | Shared filters optional, `hours` (1–720, default 48) | `rows` with resolved `filters`, or `hours` in the legacy form |
@@ -316,9 +334,11 @@ the record lacks a valid pair. These are the fields on an example row:
 }
 ```
 
-**Analytics.** All counts use the same filtered rows. Buckets begin at UTC
-hour or day boundaries. Missing buckets represent zero events, and the first
-and last buckets may be partial. Country counts contain up to 250 codes,
+**Analytics.** Event counts use the same filtered rows. Buckets begin at UTC
+hour or day boundaries. `coverage` reports expected and completed source slots
+by export time and ignores country and category filters. The first and last
+buckets may be partial. Missing values in `series` need the coverage check
+described above before being displayed as zero. Country counts contain up to 250 codes,
 including a null-code group if present. The map returns the 500 busiest
 two-degree cells as latitude and longitude centroids. `omitted_events` counts
 valid locations outside those returned cells. The feed provides exact
@@ -330,6 +350,7 @@ coordinates for event detail.
   "bucket": "hour",
   "summary": {"total_events": 2, "geolocated_events": 1, "countries_with_events": 1},
   "series": [{"bucket_start": "2026-11-23T23:00:00+00:00", "count": 2}],
+  "coverage": [{"bucket_start": "2026-11-23T23:00:00+00:00", "expected_exports": 4, "completed_exports": 4}],
   "country_counts": [{"country_code": "US", "country_name": "United States", "count": 2}],
   "country_counts_truncated": false,
   "category_counts": [{"primary_category": "diplomacy", "count": 2}],
@@ -449,6 +470,15 @@ The test suite covers:
 - retry classification
 - advisory lock behavior
 - readiness checks
+- catch-up ordering, cooldown, partial-export retry, retention, and coverage
+
+Stage 4 passed 77 backend tests against PostgreSQL 17 with PostGIS and seven
+frontend tests, and produced a successful Vite build. The local sample used
+33 real exports and stored 37,454 records.
+Both indicator routes returned populated results. Historical coverage was
+sparse, so the magnitude of a spike in this sample is unreliable as a
+comparison with full-day activity. See the [deployment guide](docs/DEPLOYMENT.md)
+for measured storage and local request times.
 
 ## Future Improvements
 
