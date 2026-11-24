@@ -671,11 +671,13 @@ def test_history_counts_complete_zero_and_keeps_completed_coverage(dashboard_cli
 
 def test_map_and_profile_endpoints_are_bounded(dashboard_client, dashboard_window):
     globe = dashboard_client.get("/map", params=dashboard_window).json()
+    assert globe["cell_degrees"] == 2
     assert globe["viewport_events"] == 4
     assert sum(cell["count"] for cell in globe["cells"]) == 4
     assert globe["omitted_events"] == 0
     split = dashboard_client.get("/map", params={**dashboard_window, "west": 170, "east": -170}).json()
     assert split["viewport_events"] == 1
+    assert split["cell_degrees"] < 2
     assert dashboard_client.get("/map", params={"south": 60, "north": 40}).status_code == 422
     profile = dashboard_client.get("/country-profile", params={**dashboard_window, "country": "CA"})
     assert profile.status_code == 200, profile.text
@@ -687,6 +689,23 @@ def test_map_and_profile_endpoints_are_bounded(dashboard_client, dashboard_windo
     assert dashboard_client.get("/country-profile", params=dashboard_window).status_code == 422
     catalog = dashboard_client.get("/countries").json()["rows"]
     assert {"country_code": "GB", "country_name": "Gabon"} in catalog
+
+
+def test_world_map_does_not_truncate_occupied_two_degree_cells(dashboard_client, pg_connection):
+    run_id = uuid4()
+    insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+    common = _build_event(run_id, "unused")
+    events = [
+        dict(common, dedupe_key=f"map-{index}", action_geo_lat=-85 + 2 * (index // 180),
+             action_geo_long=-179 + 2 * (index % 180))
+        for index in range(701)
+    ]
+    insert_raw_and_normalized_batch(pg_connection, events)
+    window = {"start": common["event_time_utc"].isoformat(),
+              "end": (common["event_time_utc"] + timedelta(hours=1)).isoformat()}
+    result = dashboard_client.get("/map", params=window).json()
+    assert result["cell_degrees"] == 2
+    assert result["viewport_events"] == len(result["cells"]) == len(events)
 
 
 def test_health_monitor_counts_missing_and_reports_scheduler(dashboard_client, pg_connection, monkeypatch):

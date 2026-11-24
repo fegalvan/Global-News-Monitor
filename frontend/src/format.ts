@@ -49,15 +49,17 @@ export function customWindow(startInput: string, endInput: string): Window | nul
 
 export function activitySeries(rows: Sample[], window: Window, bucket: Bucket, coverage: Coverage[]) {
   const size = bucket === 'hour' ? HOUR : DAY
-  const first = Math.floor(Date.parse(window.start) / size) * size
+  const start = Date.parse(window.start)
+  const first = Math.floor(start / size) * size
   const end = Date.parse(window.end)
   const counts = new Map(rows.map((row) => [Date.parse(row.bucket_start), row.count]))
   const observed = new Set(coverage.filter(
-    (row) => row.expected_exports > 0 && row.completed_exports === row.expected_exports,
+    (row) => row.expected_exports === size / (15 * 60_000) && row.completed_exports === row.expected_exports,
   ).map((row) => Date.parse(row.bucket_start)))
   const series = []
   for (let time = first; time < end; time += size) {
-    series.push({ time, count: counts.get(time) ?? (observed.has(time) ? 0 : null) })
+    const complete = time >= start && time + size <= end && observed.has(time)
+    series.push({ time, count: complete ? counts.get(time) ?? 0 : null })
   }
   return series
 }

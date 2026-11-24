@@ -1,5 +1,9 @@
 import type { Position } from 'geojson'
 
+export function cellOrigin(value: number, minimum: number, degrees: number) {
+  return Math.min(-minimum - degrees, minimum + Math.floor((value - minimum) / degrees) * degrees)
+}
+
 function nearestLongitude(longitude: number, reference: number) {
   return longitude + 360 * Math.round((reference - longitude) / 360)
 }

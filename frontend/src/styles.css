@@ -75,6 +75,7 @@ a:hover { text-decoration: underline; }
 .feed-status dl { display: grid; grid-template-columns: 1fr 1fr; gap: .3rem .9rem; }
 .feed-status dt { color: var(--muted); font-size: .8rem; margin-bottom: .23rem; }
 .feed-status dd { font-family: var(--mono); font-size: .77rem; color: #e0e9f3; line-height: 1.36; }
+.feed-clock-note { display: block; margin-top: .45rem; color: var(--muted); font-size: .72rem; line-height: 1.35; }
 .icon-button {
   display: grid; place-items: center; width: 1.9rem; height: 1.9rem; border: 1px solid var(--border);
   border-radius: 4px; color: var(--muted); background: var(--surface);

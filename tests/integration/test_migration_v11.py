@@ -9,6 +9,7 @@ import psycopg
 from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 import pytest
+from sqlalchemy.exc import ProgrammingError
 
 
 V10 = "0007_idempotency_hardening"
@@ -47,6 +48,17 @@ def test_quality_migration_and_rollback():
             FROM new_raw
         """, (run, str(run)))
         try:
+            connection.execute("CREATE TABLE event_hourly_counts (blocker int)")
+            try:
+                with pytest.raises(ProgrammingError, match="event_hourly_counts.*already exists"):
+                    command.upgrade(config, "head")
+                assert connection.execute("TABLE alembic_version").fetchone()["version_num"] == V10
+                assert connection.execute("""
+                    SELECT country_name, event_code FROM normalized_events n
+                    WHERE EXISTS (SELECT FROM raw_events r WHERE r.id=n.raw_event_id AND r.ingestion_run_id=%s)
+                """, (run,)).fetchone() == {"country_name": "United Kingdom", "event_code": None}
+            finally:
+                connection.execute("DROP TABLE event_hourly_counts")
             command.upgrade(config, "head")
             report = connection.execute("TABLE gdelt_code_correction_report").fetchone()
             assert report["restored_event_codes"] >= 1

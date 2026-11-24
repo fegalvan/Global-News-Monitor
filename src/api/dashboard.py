@@ -175,11 +175,13 @@ def history(params: DashboardFilters):
 
 def grid_resolution(south: float, west: float, north: float, east: float) -> float:
     width = east - west if east >= west else 360 + east - west
-    for degrees in (0.25, 0.5, 1, 2, 5, 10, 15, 20, 30):
+    for degrees in (0.25, 0.5, 1):
         # Two extra rows and three columns cover edges and a split at ±180°.
-        if ((north - south) / degrees + 2) * (width / degrees + 3) <= 600:
+        if ((north - south) / degrees + 2) * (width / degrees + 3) <= 6_000:
             return degrees
-    return 30
+    # The entire two-degree grid has 90 × 180 slots. SQL returns every
+    # occupied slot and the renderer uses one canvas regardless of cell count.
+    return 2
 
 
 @router.get("/map")

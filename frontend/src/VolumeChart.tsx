@@ -15,7 +15,7 @@ export default function VolumeChart({ analytics, window, bucket, loading }: {
   const expected = coverage.reduce((total, row) => total + row.expected_exports, 0)
   return (
     <section className="panel volume-panel">
-      <PanelHeading title="Activity over time" subtitle={`Events per ${bucket} · UTC`} />
+      <PanelHeading title="Activity over time" subtitle={`Reported events per complete ${bucket} · UTC`} />
       {rows.some((row) => row.count !== null) ? (
         <div className="volume-chart" aria-label="Chart of events by UTC time bucket">
           <ResponsiveContainer width="100%" height="100%" minWidth={0}>
@@ -35,9 +35,9 @@ export default function VolumeChart({ analytics, window, bucket, loading }: {
             </AreaChart>
           </ResponsiveContainer>
         </div>
-      ) : <p className="panel-empty">{loading ? 'Loading activity…' : analytics ? 'No activity observations in the selected window.' : 'Activity unavailable.'}</p>}
+      ) : <p className="panel-empty">{loading ? 'Loading activity…' : analytics ? 'No fully covered time buckets in this window.' : 'Activity unavailable.'}</p>}
       {expected > 0 && <p className="coverage-note">{count(completed)} of {count(expected)} expected exports processed
-        {completed < expected && ' · Gaps show incomplete coverage'}</p>}
+        {rows.some((row) => row.count === null) && ' · Gaps include partial buckets and missing exports'}</p>}
     </section>
   )
 }

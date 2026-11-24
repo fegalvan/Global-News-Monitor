@@ -63,6 +63,7 @@ export type CountryProfile = {
 }
 export type Freshness = {
   latest_export_time_utc: string | null
+  latest_export_completed_at_utc: string | null
   latest_ingestion_completed_at_utc: string | null
   latest_event_occurrence_date: string | null
   status: 'healthy' | 'no_successful_ingest' | 'source_stale' | 'ingestion_stale'

@@ -16,6 +16,7 @@ from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 
 from src.db import fetch_all
+from src.api.dashboard import grid_resolution
 from src.ingestion.dashboard_queries import EventFilters, VALID_COORDINATES, fetch_analytics, fetch_viewport
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -138,7 +139,10 @@ def main():
             before, old = measure(lambda: connection.execute(sql, legacy_params).fetchone(), args.runs)
             same_contract, new = measure(lambda: fetch_analytics(connection, filters, bucket=bucket), args.runs)
             core, _ = measure(lambda: fetch_analytics(connection, filters, bucket=bucket, include_map=False), args.runs)
-            viewport, map_cells = measure(lambda: fetch_viewport(connection, filters, (-90, -180, 90, 180), 15), args.runs)
+            world = (-90, -180, 90, 180)
+            degrees = grid_resolution(*world)
+            coarse, coarse_cells = measure(lambda: fetch_viewport(connection, filters, world, 15), args.runs)
+            viewport, map_cells = measure(lambda: fetch_viewport(connection, filters, world, degrees), args.runs)
             for key in ("total_events", "geolocated_events", "countries_with_events", "map_cells"):
                 assert old[key] == new[key], key
             for key in ("country_counts", "category_counts"):
@@ -148,6 +152,7 @@ def main():
                     row["bucket_start"] = datetime.fromisoformat(row["bucket_start"])
                 assert old[key] == new[key], key
             assert sum(row["count"] for row in map_cells) == new["geolocated_events"]
+            assert sum(row["count"] for row in coarse_cells) == new["geolocated_events"]
             plans = []
 
             def fetch_with_plan(conn, query, parameters):
@@ -155,10 +160,11 @@ def main():
                 return fetch_all(conn, query, parameters)
             with patch("src.ingestion.dashboard_queries.fetch_all", side_effect=fetch_with_plan):
                 fetch_analytics(connection, filters, bucket=bucket, include_map=False)
-                fetch_viewport(connection, filters, (-90, -180, 90, 180), 15)
+                fetch_viewport(connection, filters, world, degrees)
             plan = explain(connection, sql, legacy_params)
             print(f"{days} day(s) legacy={before} v1.1_same_contract={same_contract} "
-                  f"v1.1_without_map={core} viewport={viewport} legacy_temp={temporary_blocks(plan)} "
+                  f"v1.1_without_map={core} viewport_15deg={coarse} viewport_{degrees:g}deg={viewport} "
+                  f"viewport_cells={len(map_cells)} legacy_temp={temporary_blocks(plan)} "
                   f"v1.1_temp={plans}", flush=True)
 
 

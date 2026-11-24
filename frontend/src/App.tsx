@@ -133,9 +133,10 @@ export default function App() {
                 disabled={board.loading} onClick={refreshNow}><RefreshCw size={16} /></button>
             </div>
             <dl>
-              <div><dt>Source export</dt><dd>{utc(freshness.data?.latest_export_time_utc ?? null)}</dd></div>
-              <div><dt>Ingestion completed</dt><dd>{utc(freshness.data?.latest_ingestion_completed_at_utc ?? null)}</dd></div>
+              <div><dt>GDELT batch slot</dt><dd>{utc(freshness.data?.latest_export_time_utc ?? null)}</dd></div>
+              <div><dt>Batch ingested</dt><dd>{utc(freshness.data?.latest_export_completed_at_utc ?? null)}</dd></div>
             </dl>
+            <small className="feed-clock-note">GDELT labels batches by scheduled slot. A file can arrive before its slot time.</small>
           </div>
         </header>
 
