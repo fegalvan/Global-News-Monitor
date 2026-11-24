@@ -107,9 +107,9 @@ fixture applies the actual chain to a dedicated database.
   to decide whether another page exists. The join to raw detail happens
   after choosing the page. Equal timestamps are common in a 15-minute batch,
   which makes the ID tiebreaker necessary.
-- [`fetch_analytics`](../src/ingestion/dashboard_queries.py) aggregates one
-  filtered set into summary metrics, UTC buckets, countries, categories,
-  and two-degree coordinate cells. It also joins the expected 15-minute slot
+- [`fetch_analytics`](../src/ingestion/dashboard_queries.py) combines hourly
+  totals and raw counts for partial edge hours into summary metrics, UTC
+  buckets, countries, and categories. It also joins the expected 15-minute slot
   calendar to export checkpoints to report coverage by bucket. Coverage is
   independent of country and category and uses export time. The same source
   slot can contain records with different normalized timestamps.
@@ -123,7 +123,7 @@ fixture applies the actual chain to a dedicated database.
   geographic predicates. The existing grid query uses numeric arithmetic on
   latitude and longitude after filtering. See [index SQL](../sql/stage3_indexes.sql).
 
-## Statistical indicators
+## Legacy statistical API
 
 [`SPIKES_SQL`](../src/ingestion/repository.py) groups recent events by
 country name and category, keeping groups with at least 10 recent records and
@@ -149,14 +149,14 @@ average media tone field stored on the raw record.
 [`App.tsx`](../frontend/src/App.tsx) owns the country, category, and time
 controls. It resolves one UTC window for every panel. The server enforces
 a 30-day maximum. [`useDashboard.ts`](../frontend/src/useDashboard.ts) requests
-analytics, the first page, and both indicators together, aborts obsolete
+analytics and the first page together, aborts obsolete
 requests, and resets the event cursor when selections change. On a failed
 refresh it retains the last successful result for the same selection and
-shows an error message. An indicator can show its own error while the main
-dashboard remains usable.
+shows an error message. History, map, and profile details have independent
+loading and error states.
 
 [`ActivityMap.tsx`](../frontend/src/ActivityMap.tsx) renders bundled Natural
-Earth boundaries and the API's two-degree cells using Leaflet. Country
+Earth boundaries and viewport cells using Leaflet. Country
 clicks resolve to a GDELT code only where the boundary name can be matched.
 [`mapGeometry.ts`](../frontend/src/mapGeometry.ts) unwraps polygons at the
 antimeridian to avoid lines across the entire map. The chart component uses
@@ -249,3 +249,100 @@ the resource sizing, billing meters, and production checks.
 5. Follow one event from its raw snapshot through `raw_event_id` and check
    its original CAMEO code, rule reason, and validation flags when a row
    looks surprising.
+
+## v1.1 data and query architecture
+
+### Separate source identifiers from normalized fields
+
+GDELT's event action geography uses the FIPS country lookup. The two actor
+affiliation fields use CAMEO's actor-country dictionary. For example, FIPS
+`GB` is Gabon, FIPS `UK` is the United Kingdom, and CAMEO `GBR`
+is an actor affiliation. Separating namespaces also fixes `ZA` (Zambia) and
+`SF` (South Africa). The original event, geography, and actor fields remain
+in `raw_payload`. An absent or placeholder country yields
+`missing_country_code`, an unrecognized code yields `unmapped_country_code`,
+and a known FIPS code yields a stored country. Coordinates are independently
+checked. GDELT geography type 0 has no location, so its coordinate placeholders
+are cleared. Type 1 identifies country-level precision, 2 and 5 are
+administrative areas, and 3 and 4 are localities. These are source precision
+classes. [GDELT event codebook](https://data.gdeltproject.org/documentation/GDELT-Event_Codebook-V2.0.pdf) · [FIPS lookup](https://gdeltproject.org/data/lookups/FIPS.country.txt) · [Actor lookup](https://gdeltproject.org/data/lookups/CAMEO.country.txt)
+
+CAMEO codes stay strings. Validation checks membership in the pinned
+taxonomy, so `010` and `0211` keep their leading zeros. GDELT's event label
+file appends `106` to the `1056` description. The reference loader repairs
+that line using the CAMEO manual. Input validation also rejects nonfinite
+numerics, out-of-range Goldstein values, oversized event IDs, and timestamps
+whose digit counts differ from the source format. Labels can help explain
+records. GNM's broad categories are still heuristic and the original CAMEO
+classification and source link provide important context. [Event-code lookup](https://gdeltproject.org/data/lookups/CAMEO.eventcodes.txt) · [CAMEO verb codebook](https://eventdata.parusanalytics.com/cameo.dir/Cameo.0.10b2.pdf)
+
+### Use the least expensive representation that answers the question
+
+A single aggregation of grouped counts supplies the summary, country totals,
+category totals, and UTC time series. Complete hours use
+`event_hourly_counts`. At most two partial hours read raw detail through the
+existing event-time or country-time indexes. A filter contained in a single
+hour reads detail once. The analytics and coverage queries share a read-only
+repeatable-read snapshot. The country selector uses a small reference response,
+independent of map and analytics queries.
+
+Statement-level normalized-row triggers apply grouped deltas in the same
+transaction as each batch. Inserts update both live and historical totals.
+Actual edits update both, and retention deletes subtract from live counts
+while preserving archival counts. The existing raw dedupe constraint prevents
+duplicate trigger increments. Checkpoint completion records historical
+coverage separately so a known zero survives raw expiry. Before the upgrade,
+already-expired checkpoints cannot establish historical coverage.
+
+Historical counts are kept for 90 days, and the normal 17-day raw retention is
+unchanged. A deliberately configured raw window longer than 90 days may keep
+the corresponding live aggregate row until raw removal. Old checkpoint
+metadata stays available to prevent reprocessing an expired export. The map
+uses the raw latitude and longitude pair and chooses a grid small enough for
+the requested extent while keeping the maximum cell count bounded. With
+`west > east` the viewport crosses the antimeridian. Countries can be chosen
+directly from available map boundaries or from the FIPS catalogue. The
+viewport map scans matching raw rows, using a partial time index that includes
+latitude and longitude where both coordinates exist. The compatibility response from
+`/analytics` still offers its original two-degree grid when requested.
+
+### Compare equal periods and gate the score on coverage
+
+The two comparisons use successive non-overlapping 24-hour or seven-day
+periods ending at the latest whole UTC hour at or before the selected end.
+The archive is indexed by the dashboard's event record timestamp.
+Checkpoint coverage comes from the 15-minute export clock. A fully observed
+window can contain zero matching events. A window with an absent or failed
+export has partial coverage. Its observed count remains visible, while the
+change is unavailable. The absolute difference is current minus previous.
+Percentage change divides that difference by the previous count, so a
+completed period with zero previous records has an absolute change and an
+undefined percentage. Each plotted daily value needs 96 complete exports
+and a trailing mean requires seven consecutive complete UTC days.
+
+For the latest complete 24-hour window, sample the previous 12 weekly
+windows ending at the same UTC weekday and hour. Require eight fully covered
+periods and a median of at least 20. Weekly matches control for day-of-week
+and time-of-day reporting patterns. The median resists isolated extreme
+days. The median absolute deviation is the median distance from that
+median. The scale is the larger of `1.4826 × MAD` and the square root of
+the median. The factor is the inverse of the standard normal's 75th
+percentile, which makes scaled MAD consistent for standard deviation under
+a normal model. The count-scale
+floor prevents a zero or tiny MAD from yielding an unstable score.
+The score is the observed excess divided by that scale. A flag requires a
+score of at least 3.5, an excess of at least 20 reports, and a relative
+increase of at least 50%. The thresholds are transparent screening rules.
+They require operational calibration once genuine comparable history has
+accumulated. Expected activity is the baseline median, and the scale is a
+description of variability. The published score has no calibrated false-alarm
+probability or confidence interval. Media volume can be overdispersed,
+serially correlated, and sensitive to the mix of sources. [NIST guidance on modified Z-scores](https://itl.nist.gov/div898/handbook/eda/section3/eda35h.htm)
+
+The dashboard checks one selected country/category combination at a time.
+It avoids sparse cross-country rankings and leaves the older spike and
+Goldstein summaries available through their existing API routes. The older
+spike calculation compared unequal durations and omitted zero-activity days.
+The Goldstein score describes an event code's expert-assigned conflict or
+cooperation weight. It supports descriptive actor-pair summaries with those
+limits in mind.

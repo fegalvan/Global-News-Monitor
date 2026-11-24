@@ -339,3 +339,133 @@ Median elapsed times were 164.1 ms for analytics, 65.6 ms for events, 78.7 ms
 for spikes, 73.3 ms for tension, and 63.7 ms for freshness. These values
 include local connection and serialization time. Managed instance latency,
 load limits, and 17- or 30-day query performance remain unverified.
+
+## v1.1 migration and rollback
+
+Use the existing Ubuntu VM, B1ms PostgreSQL 17 server, 32 GiB database,
+and 17-day raw-event cleanup settings. Keep the $5 budget, spending limit,
+static IP, and network controls in place. At $0.005/hour the IPv4 meter is
+approximately $3.60 for a 30-day month or $3.72 for a 31-day month if other
+usage stays within its allowances. Allow for one-time migration WAL and
+temporary work files. Record Azure Storage Used and WAL usage before the
+migration. Leave several GiB of headroom above the expected table size.
+Production rehearsal and image approval come before rollout.
+
+### Prepare and apply
+
+1. Build v1.1 backend and Caddy/frontend images off the VM where practical.
+   Scan the exact candidate image digests. On the VM record the current
+   container/image IDs and tag the v1.0 images locally for rollback before
+   loading new images. Validate the production Compose overlay using
+   `config --quiet`. Save the v1.0 Compose files for rollback.
+2. Confirm a usable Flexible Server backup and record the UTC recovery
+   point before migration. If an additional logical backup is needed,
+   stream it off the VM over SSH to approved storage. Protect database
+   credentials and backup contents as you would the existing runtime secrets.
+3. Stop the scheduler using the same `-p app`, environment file, and overlay
+   used at deployment. Allow any manual ingest to finish before migration.
+   Keep the v1.0 API serving during this step. The migration takes write
+   locks on the raw/normalized tables and export checkpoints. Schedule an
+   ingestion maintenance window and monitor database storage and locks.
+4. Run Alembic once as the database owner using the candidate backend image.
+   Use the existing verified-TLS owner URL through the environment in a
+   trusted shell. Use a short lock timeout so a competing writer fails the
+   migration promptly. The service roles keep their existing statement timeouts.
+5. Verify the revision, quality report, raw counts, and sampled rollup parity.
+   Verify the grants for existing Azure roles or run `azure-roles.sql` only
+   when creating new runtime roles on a fresh installation. Optionally run
+   `ANALYZE raw_events, normalized_events, event_hourly_counts` as the owner
+   after migration. Start the upgraded API, web, and scheduler using the
+   production Compose configuration and its existing runtime credentials.
+6. Check HTTPS from an off-VM browser, the health routes, analytics and
+   historical coverage, country profile, and map. Watch two scheduler cycles.
+   Confirm a new archive slot, compare coverage and response times, and
+   look for database errors and unexpected restarts.
+
+Example migration commands, with the backend candidate already saved under
+its release tag and the owner URL exported privately as `DATABASE_URL`:
+
+```bash
+compose=(docker compose -p app --env-file deploy/.env -f compose.yaml -f deploy/compose.azure.yaml)
+"${compose[@]}" config --quiet
+"${compose[@]}" stop scheduler
+docker run --rm --env DATABASE_URL --env 'PGOPTIONS=-c lock_timeout=5s' \
+  gnm-backend:v1.1 python -m src.main migrate
+unset DATABASE_URL
+# Verify the revision, correction report, and rollup parity before restarting.
+# Tag the verified v1.1 images under the image names selected by the overlay first.
+"${compose[@]}" up -d --no-build --wait api scheduler web
+```
+
+Run the following as the owner to verify the report and count parity on an
+hour when there has been steady coverage. A stale result sampled during
+ingestion can be avoided with a read-only repeatable-read transaction.
+
+```sql
+TABLE alembic_version;
+TABLE gdelt_code_correction_report;
+
+BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY;
+WITH bounds AS (SELECT date_trunc('hour', now(), 'UTC') - interval '1 hour' AS start)
+SELECT
+    (SELECT count(*) FROM normalized_events, bounds
+     WHERE event_time_utc >= start AND event_time_utc < start + interval '1 hour') AS raw_count,
+    (SELECT coalesce(sum(live_count), 0) FROM event_hourly_counts, bounds
+     WHERE hour_utc = start) AS aggregate_count;
+COMMIT;
+```
+
+### Rollback
+
+For an application regression, stop the v1.1 scheduler, retag the saved
+v1.0 images under the Compose image names, and start the v1.0 stack with the
+saved configuration. The v1.1 schema is additive and the corrected rows
+remain compatible with v1.0. The rollups detect v1.0 retention when a
+checkpoint is already expired. During an extended rollback the v1.0
+normalizer can create rows that need reconciliation again. Rehearse that
+reconciliation on a restored copy before returning to v1.1. A temporary
+rollback also pauses the automatic 90-day archive purge, which can be run
+by the database owner if needed.
+
+A schema downgrade is optional for application rollback. Export any needed
+historical aggregate and coverage tables before downgrading because their
+expired raw detail cannot be reconstructed. With writers stopped, run
+`python -m alembic downgrade 0007_idempotency_hardening` under the v1.1 owner
+image and configuration, then start v1.0. The downgrade drops new schema
+objects and preserves corrected country and event values. Restore the
+pre-migration backup only if the data corrections themselves must be
+reversed. Review any point-in-time restore cost and replay the exports
+ingested since the backup before switching traffic.
+
+### Internal operations and external availability
+
+Run `bash deploy/check-host.sh <public-hostname>` from the repo on the VM.
+The HTTPS probes use loopback with the public hostname and certificate.
+The script prints website and API timing, ingestion status, RAM, disk,
+container exit and restart information, and host interface counters.
+Use `docker compose logs --since 1h api scheduler` with the established
+production flags to investigate. The API adds a `Server-Timing` header and a
+latency/status log entry for every analytics, map, history, event, and profile
+request. The existing rotated Docker logs bound local storage use.
+
+| Signal | Where to inspect and what to do |
+| --- | --- |
+| Website or API fails its internal probe | Inspect Caddy, API, and PostgreSQL logs. A readiness failure with live API points to the database or ingest freshness. |
+| Checkpoints lag or fail | `/api/health/monitor` tracks 96 slots ending 30 minutes behind the current clock. Inspect the listed UTC slots in scheduler logs and checkpoint status. Check upstream archive availability before replaying. |
+| Scheduler heartbeat is stale after 25 minutes | Check Docker exit, restart, or OOM status and scheduler logs. A completed cycle means the polling process completed, and export coverage indicates what actually arrived. |
+| Analytics or map latency rises | Compare latency log distributions for the same filter and range. Capture `EXPLAIN (ANALYZE, BUFFERS)` on a copy before changing indexes or database settings. |
+| Storage growth or low remaining space | Review Flexible Server Storage Used, Storage Percent, WAL storage, and backup usage. Investigate before 70% and urgently at 85%. Confirm cleanup, autovacuum, and checkpoint progress. |
+| VM memory, CPU credits, or container restarts | Track available memory locally and track Percentage CPU and CPU Credits Remaining in Azure Metrics. Investigate sustained available memory below 150 MiB, credit exhaustion, an OOM, or increasing restarts. |
+| Transfer and billing | Track Network Out Total in Azure Metrics and reconcile actual billable bandwidth in Cost Management. Use the lower 15 GB student-account allowance for planning until the meter confirms coverage. Review usage near 10 GB/month and check Cost Analysis against the existing $5 budget. |
+
+Azure's standard platform metrics are available with the existing account.
+The runbook uses the existing metrics and local Docker logs, so it adds no
+paid log ingestion or alert resources. [Azure Monitor pricing](https://azure.microsoft.com/en-us/pricing/details/monitor/) · [VM metrics](https://learn.microsoft.com/en-us/azure/azure-monitor/reference/supported-metrics/microsoft-compute-virtualmachines-metrics) · [PostgreSQL metrics](https://learn.microsoft.com/en-us/azure/azure-monitor/reference/supported-metrics/microsoft-dbforpostgresql-flexibleservers-metrics) · [Azure bandwidth pricing](https://azure.microsoft.com/en-us/pricing/details/bandwidth/)
+
+An outside monitor tests public DNS, routing, certificate trust, Caddy,
+and the API from outside Azure. UptimeRobot's free tier supports five-minute
+HTTP checks and requires an account. If approved, configure separate HTTPS
+monitors for `/` and `/api/health`; use `/api/health/ready` as an optional
+data-readiness check with a separate alert. The internal monitor returns HTTP
+200 for operational degradations and lists issues in its response. No external
+monitor was enrolled for this release. [UptimeRobot free-tier documentation](https://help.uptimerobot.com/en/articles/11604710-who-should-use-uptimerobot-s-free-plan)

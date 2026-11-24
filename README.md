@@ -8,6 +8,22 @@ Global News Monitor ingests structured GDELT event exports into PostgreSQL and s
 
 The production screenshot shows 9,174 GDELT records with 14 of 96 expected exports in the selected 24-hour window during initial catch-up. The coverage count distinguishes gaps from observed zero activity. [Mobile event feed](docs/dashboard-mobile.jpg) · [Deployment guide](docs/DEPLOYMENT.md#azure-production-deployment) · [Technical walkthrough](docs/TECHNICAL_WALKTHROUGH.md)
 
+## v1.1 dashboard
+
+- Choose a country in the map or country selector to open its profile.
+  The selected time and category apply to the profile, charts, and recent events.
+- Zoom or pan to query the current map viewport. The footer gives the number
+  of events in view, the number with valid coordinates, and the grid resolution.
+- Open **Trends** to see matched 24-hour and seven-day changes, a 30-day daily
+  chart, and a reporting anomaly check that displays its coverage and sample size.
+- GDELT counts describe machine-coded reporting. Coverage can be incomplete,
+  skewed by source availability, and affected by repeated stories or classification errors.
+
+The public deployment remains v1.0 pending review. See the
+[monitoring and release runbook](docs/DEPLOYMENT.md#v11-migration-and-rollback)
+for rollout, the [technical walkthrough](docs/TECHNICAL_WALKTHROUGH.md#v11-data-and-query-architecture)
+for the methods, and the [validation report](docs/V1.1_VALIDATION.md) for measurements.
+
 ## Project Overview
 
 This system polls the latest GDELT Event export, parses the compressed dataset, transforms each row into a normalized event shape, applies deterministic category rules, and writes both raw and query-friendly records to PostgreSQL.
@@ -251,18 +267,18 @@ and writes the static site to `frontend/dist/`.
 ### Dashboard behavior
 
 - Country, category, and UTC time-window filters apply to the map, KPIs,
-  charts, indicator panels, and event feed. The event feed loads 20 records
+  charts and event feed. History uses the chosen country and category and anchors comparisons to the selected end time. The event feed loads 20 records
   at a time and resets when the selection changes.
 - The dashboard checks freshness every minute while the tab is visible.
   A newly processed export refreshes the rolling windows together. Custom
   ranges remain fixed and can be refreshed manually. Source export,
   ingestion completion, reported event date, and frontend refresh are shown
   separately.
-- The map displays two-degree cells and supports zoom, pan, and country
-  selection where a boundary can be matched to an available GDELT country
-  name. Use the country filter for codes with ambiguous names or missing
-  boundaries. Geographic coverage can be partial, and the map reports events
-  outside its 500 busiest cells.
+- The map requests the viewport after a zoom or pan. It coarsens the grid
+  when needed to fit at most 600 cells and allocates every valid location in
+  the viewport to one cell. Use the country selector for places without a
+  matching Natural Earth boundary. Event details show source geographic precision
+  when available, including country, administrative area, or locality.
 - The activity chart shows the number of completed source exports in the
   window. A bucket without matching events shows zero when all its expected
   exports completed. An empty bucket with incomplete coverage is left blank.
@@ -296,7 +312,12 @@ classification labels and source links as references to the reporting used by GD
 | Endpoint | Parameters | Response |
 | --- | --- | --- |
 | `GET /events` | Shared filters, `limit` (1–200, default 50), `before_time` and `before_id` | `filters`, `limit`, `rows`, `next_cursor` |
-| `GET /analytics` | Shared filters, `bucket=hour\|day` (default `hour`) | `filters`, `bucket`, `summary`, `series`, `coverage`, `country_counts`, `country_counts_truncated`, `category_counts`, `map` |
+| `GET /analytics` | Shared filters, `bucket=hour\|day` (default `hour`), `include_map=false` to skip the legacy grid | `filters`, `bucket`, `summary`, `series`, `coverage`, `country_counts`, `country_counts_truncated`, `category_counts`, `map` |
+| `GET /map` | Shared filters plus optional `south`, `west`, `north`, `east` | All matched coordinates in the viewport grouped into a bounded grid |
+| `GET /countries` | None | Static catalogue of FIPS event geography codes |
+| `GET /country-profile` | Shared filters with a required mapped `country` | Leading source domains and GDELT location names |
+| `GET /history` | Shared country and category filters and selected end | Coverage, matched comparisons, daily trend, and anomaly status |
+| `GET /health/monitor` | None | Scheduler heartbeat, freshness, and overdue export slots |
 | `GET /freshness` | `max_age_minutes` (1–1440, default 60) | Source, ingestion, and event timestamps plus a status |
 | `GET /spikes` | Shared filters optional, `hours` (1–720, default 24) | `rows` with resolved `filters`, or `hours` in the legacy form |
 | `GET /tension` | Shared filters optional, `hours` (1–720, default 48) | `rows` with resolved `filters`, or `hours` in the legacy form |
@@ -305,8 +326,10 @@ The existing `/latest`, `/stats`, `/health`, and `/health/ready` routes retain
 their response shapes.
 
 **Shared filters.** Pass `country` as a stored two- or three-letter GDELT
-country code, matched case-insensitively on input. Code variants remain distinct
-and the country counts supply the exact codes to send. Pass `category` as
+country code, matched case-insensitively on input. GDELT event geography uses
+two-character FIPS codes. The API still accepts three-character inputs for
+compatibility with older callers. The country catalogue supplies the codes
+used by current ingestion. Pass `category` as
 `conflict`, `protest`, `politics`, `diplomacy`, `economics`, `cyber`, or
 `crisis`. Use `start` (inclusive) and `end` (exclusive) as ISO 8601 timestamps
 with a UTC offset. Windows span at most 30 days. The default end is the current
@@ -387,7 +410,9 @@ threshold, and `healthy` otherwise. Freshness reports these states with HTTP 200
 when the database can be queried. The existing readiness route continues to
 use ingestion completion age and returns HTTP 503 when it is unready.
 
-**Indicators.** Spikes group by country name and category. Each candidate has
+**Legacy indicators.** The API retains `/spikes` and `/tension` for
+existing clients. The dashboard uses `/history` for coverage-gated comparisons and
+reporting anomaly detection. The legacy spikes endpoint groups by country name and category. Each candidate has
 at least 10 events in the selected window and a matching baseline. Its
 `recent_count` is compared with `baseline_avg` and population standard
 deviation over UTC days with recorded events in the 15-day lookback before
@@ -415,6 +440,9 @@ retain the last successful response if the dashboard already has one.
 
 Key tables:
 
+- `event_hourly_counts` and `event_history_coverage` hold hour-level live and archival event totals, plus known completed export slots. Production raw detail stays at 17 days and compact history lasts 90 days.
+- `scheduler_health` holds the latest scheduler cycle heartbeat and result.
+- `gdelt_code_correction_report` records the historical normalization audit at migration.
 - `ingestion_runs`
   Audit log for each ingest attempt, including status and row counters.
 
