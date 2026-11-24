@@ -1,13 +1,21 @@
 {$SITE_ADDRESS} {
-    encode zstd gzip
+	encode zstd gzip
+	header {
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
 
-    handle_path /api/* {
-        header Cache-Control "no-store"
-        reverse_proxy api:8000
-    }
+	handle_path /api/* {
+		header Cache-Control "no-store"
+		reverse_proxy api:8000
+	}
 
-    handle {
-        root * /srv
-        file_server
-    }
+	handle {
+		header Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+		root * /srv
+		file_server
+	}
 }

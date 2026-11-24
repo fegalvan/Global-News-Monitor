@@ -1,9 +1,12 @@
 .git
 .venv
-.env
+downloads
+.azure
+.aws
+.ssh
 **/.env
-**/.env.local
-**/.env.*.local
+**/.env.*
+**/.envrc
 **/__pycache__
 **/node_modules
 **/dist

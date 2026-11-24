@@ -176,12 +176,64 @@ direct browser connection to another origin requires adding only the
 approved frontend origins to FastAPI's CORS configuration. Database URLs
 remain in Compose or Render service environment settings.
 
+## Azure for Students — split VM and database
+
+The Azure plan uses a North Central US `Standard_B2ats_v2` Ubuntu VM and
+PostgreSQL 17 Flexible Server on Burstable `Standard_B1ms`. Confirm account
+eligibility for VM hours, the 64 GiB P6 OS disk, and 32 GB database and
+backup allowances before creating resources. One Standard static IPv4
+accounts for the estimated $3.65 monthly charge when those allowances apply.
+Use a single database instance with 32 GiB of storage, seven-day backup
+retention, and local backups. Leave high availability, geo-redundant
+backups, and storage auto-grow disabled for this configuration. Check
+storage and backup usage after initial ingestion and during steady state.
+
+- Restrict SSH to the operator's IP and require key-only login. Test Caddy
+  via an SSH tunnel with its host ports bound to loopback. The API has no
+  published host port. After the audit, bind Caddy to the public interface
+  and open TCP 80 and 443 for ACME validation. Verify the issued HTTPS
+  certificate and HTTP redirect from an external client before sharing the URL.
+- Keep Flexible Server's firewall closed except for the VM's exact static
+  IPv4. Leave the broad Azure-services rule disabled. Verify a TLS connection
+  from the VM and rejection from an unlisted IP. Use a direct connection
+  to port 5432 so the ingestion session retains its advisory lock.
+- Configure `azure.extensions` to allow PostGIS. Apply migrations as the
+  database owner before starting the public stack. Run
+  [`deploy/azure-roles.sql`](../deploy/azure-roles.sql) in the `gnm` database
+  and set the two passwords using interactive `psql \password` prompts.
+  Reapply grants for any new tables or sequences added by future migrations.
+- Store runtime URLs as `GNM_READ_DATABASE_URL` and
+  `GNM_WRITE_DATABASE_URL` in a mode-0600 file on the VM. Use a URL-encoded
+  password, the Azure database hostname, and
+  `sslmode=verify-full&sslrootcert=/etc/ssl/certs/ca-certificates.crt&connect_timeout=10`.
+  Keep the database owner's credential outside the running services.
+- Use a recent Docker Compose release that supports `!reset`. For the
+  private smoke test set `BIND_ADDRESS=127.0.0.1` and `SITE_ADDRESS=:80`.
+  Set `SITE_ADDRESS` to the Azure-managed DNS hostname and remove the
+  loopback bind when opening the web ports. Pass `config --quiet` to avoid
+  printing connection strings.
+
+```bash
+docker compose --env-file deploy/.env -f compose.yaml -f deploy/compose.azure.yaml config --quiet
+docker compose --env-file deploy/.env -f compose.yaml -f deploy/compose.azure.yaml up -d --no-build
+```
+
+Build `linux/amd64` images on a machine with more memory and load them onto
+the small VM before starting the services. The Azure overlay
+disables the local PostgreSQL service by default and runs the API with a
+read-only login, read-only transactions, and a 12-second statement timeout.
+The ingestion login has write access only to the ingestion tables it uses.
+Verify every API route and a real ingestion cycle before opening Caddy to
+the public. Capture image vulnerability scan results at the deployed digests,
+and confirm NSG rules, DB firewall, read/write permissions, and TLS on the
+actual infrastructure.
+
 ## Public verification before publishing the URL
 
 1. Open the HTTPS frontend from a separate network or device. Check
    `/api/health`, `/api/health/ready`, and `/api/freshness` through the
    frontend origin. Verify a migration and real ingestion in host logs.
-2. Observe at least two automatic cron intervals and confirm the browser
+2. Observe at least two automatic ingestion cycles and confirm the browser
    updates after the checkpoint advances. Confirm the public page stays
    responsive while the local development processes are off.
 3. Apply a country and category filter, zoom the map, page through events,

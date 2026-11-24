@@ -4,7 +4,7 @@ x-backend: &backend
     context: .
     dockerfile: deploy/Dockerfile.api
   environment:
-    DATABASE_URL: postgresql://gnm:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/gnm?connect_timeout=10
+    DATABASE_URL: postgresql://gnm:${POSTGRES_PASSWORD:-}@postgres:5432/gnm?connect_timeout=10
     GDELT_LOOKBACK_HOURS: ${GDELT_LOOKBACK_HOURS:-24}
     GDELT_MAX_EXPORTS_PER_RUN: ${GDELT_MAX_EXPORTS_PER_RUN:-8}
     GDELT_RETENTION_DAYS: ${GDELT_RETENTION_DAYS:-17}
@@ -18,7 +18,7 @@ services:
     environment:
       POSTGRES_DB: gnm
       POSTGRES_USER: gnm
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
