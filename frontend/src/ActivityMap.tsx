@@ -1,11 +1,12 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import { feature } from 'topojson-client'
 import type { GeometryCollection, Topology } from 'topojson-specification'
 import type { FeatureCollection, MultiPolygon, Polygon } from 'geojson'
 import world from 'world-atlas/countries-110m.json'
 import { Maximize } from 'lucide-react'
-import type { Analytics, Country } from './api'
+import { queryParams, type Country, type Filters, type MapData } from './api'
+import { useResource } from './useDashboard'
 import { count } from './format'
 import { mapPolygon } from './mapGeometry'
 import 'leaflet/dist/leaflet.css'
@@ -20,7 +21,7 @@ const boundaries: FeatureCollection<MultiPolygon, { name: string }> = {
     return { ...country, geometry: { type: 'MultiPolygon', coordinates: polygons.flatMap(mapPolygon) } }
   }),
 }
-const worldBounds = L.latLngBounds([-61, -180], [84, 180])
+const worldBounds = L.latLngBounds([-90, -180], [90, 180])
 const bands = [
   { max: 1, color: '#447a9c', label: '1' },
   { max: 9, color: '#54a8c3', label: '2–9' },
@@ -40,12 +41,13 @@ const aliases: Record<string, string> = {
 }
 
 type Props = {
-  data?: Analytics['map']
+  filters: Filters | null
   countries: Country[]
   activeCountry: string
   onCountry: (code: string) => void
   pending: boolean
-  unavailable: boolean
+  geolocated?: number
+  refresh: number
 }
 
 function tooltip(text: string) {
@@ -54,18 +56,21 @@ function tooltip(text: string) {
   return element
 }
 
-export default function ActivityMap({ data, countries, activeCountry, onCountry, pending, unavailable }: Props) {
+export default function ActivityMap({ filters, countries, activeCountry, onCountry, pending, geolocated, refresh }: Props) {
   const container = useRef<HTMLDivElement>(null)
   const map = useRef<L.Map | null>(null)
   const geography = useRef<L.GeoJSON | null>(null)
   const activity = useRef<L.LayerGroup | null>(null)
   const worldView = useRef(true)
+  const [bounds, setBounds] = useState({ south: -90, west: -180, north: 90, east: 180 })
+  const viewport = useResource<MapData>(filters ? `/map?${queryParams(filters, bounds)}` : null, refresh)
+  const data = viewport.data
 
   useEffect(() => {
     if (!container.current) return
     const instance = L.map(container.current, {
       crs: L.CRS.EPSG4326,
-      zoomSnap: 0.1, zoomDelta: 0.6, minZoom: -1, maxZoom: 7,
+      zoomSnap: 0.1, zoomDelta: 0.6, minZoom: -2, maxZoom: 7,
       scrollWheelZoom: false, doubleClickZoom: false,
       maxBounds: [[-90, -215], [90, 215]], maxBoundsViscosity: 0.75,
       zoomControl: false,
@@ -73,6 +78,20 @@ export default function ActivityMap({ data, countries, activeCountry, onCountry,
     map.current = instance
     instance.fitBounds(worldBounds, { padding: [12, 10], animate: false })
     instance.on('dragstart boxzoomstart', () => { worldView.current = false })
+    let moveTimeout: number | undefined
+    instance.on('moveend', () => {
+      window.clearTimeout(moveTimeout)
+      moveTimeout = window.setTimeout(() => {
+        const view = worldView.current ? worldBounds : instance.getBounds()
+        const next = {
+          south: Math.max(-90, Math.floor(view.getSouth() * 100) / 100),
+          west: Math.max(-180, Math.floor(view.getWest() * 100) / 100),
+          north: Math.min(90, Math.ceil(view.getNorth() * 100) / 100),
+          east: Math.min(180, Math.ceil(view.getEast() * 100) / 100),
+        }
+        if (next.south < next.north && next.west < next.east) setBounds(next)
+      }, 180)
+    })
     const graticule = L.layerGroup().addTo(instance)
     const gridStyle = { color: '#263444', opacity: 0.6, weight: 1, dashArray: '2 7', interactive: false }
     for (const lat of [-60, -30, 0, 30, 60]) L.polyline([[lat, -180], [lat, 180]], gridStyle).addTo(graticule)
@@ -89,6 +108,7 @@ export default function ActivityMap({ data, countries, activeCountry, onCountry,
     })
     resize.observe(container.current)
     return () => {
+      window.clearTimeout(moveTimeout)
       resize.disconnect()
       instance.remove()
       map.current = null
@@ -111,7 +131,7 @@ export default function ActivityMap({ data, countries, activeCountry, onCountry,
       })
       shape.unbindTooltip()
       shape.off('click mouseover mouseout')
-      shape.bindTooltip(tooltip(target ? `${target.country_name} (${target.country_code}) · Click to filter` : name))
+      shape.bindTooltip(tooltip(target ? `${target.country_name} (${target.country_code}) · Click for profile` : name))
       if (target?.country_code) {
         const code = target.country_code
         shape.on('click', () => onCountry(code))
@@ -125,15 +145,16 @@ export default function ActivityMap({ data, countries, activeCountry, onCountry,
     const layer = activity.current
     if (!layer) return
     layer.clearLayers()
-    const half = (data?.cell_degrees ?? 2) / 2
-    for (const { latitude, longitude, count: total } of data?.cells ?? []) {
+    const size = data?.cell_degrees ?? 1
+    for (const { grid_south, grid_west, count: total } of data?.cells ?? []) {
       const band = bands.find(({ max }) => total <= max)!
-      const details = `${count(total)} events · ${data?.cell_degrees}° cell · Center ${latitude}°, ${longitude}°`
-      L.rectangle([[latitude - half, longitude - half], [latitude + half, longitude + half]], {
+      const details = `${count(total)} reported events in this ${size}° cell`
+      L.rectangle([[Math.max(grid_south, bounds.south), Math.max(grid_west, bounds.west)],
+        [Math.min(grid_south + size, bounds.north), Math.min(grid_west + size, bounds.east)]], {
         pane: 'eventCells', fillColor: band.color, color: band.color, fillOpacity: 0.8, opacity: 0.85, weight: 1,
       }).bindTooltip(tooltip(details), { sticky: true }).bindPopup(tooltip(details)).addTo(layer)
     }
-  }, [data])
+  }, [bounds, data])
 
   function returnToWorld() {
     worldView.current = true
@@ -156,7 +177,8 @@ export default function ActivityMap({ data, countries, activeCountry, onCountry,
         </div>
         {!data?.cells.length && (
           <div className="map-message">
-            {pending ? 'Loading mapped activity…' : unavailable ? 'Mapped activity unavailable' : 'No mapped events in this selection'}
+            {pending || viewport.loading ? 'Loading mapped activity…' : viewport.error || !filters
+              ? 'Mapped activity unavailable' : 'No mapped events in this view'}
           </div>
         )}
       </div>
@@ -165,7 +187,8 @@ export default function ActivityMap({ data, countries, activeCountry, onCountry,
           <span>Events per cell</span>
           {bands.map(({ color, label }) => <span key={label}><i style={{ background: color }} />{label}</span>)}
         </div>
-        <span>{data?.omitted_events ? `${count(data.omitted_events)} events outside the returned cells` : 'Drag to pan · Select a country to filter'}</span>
+        <span>{data && `${count(data.viewport_events)} in view${geolocated !== undefined
+          ? ` of ${count(geolocated)} geolocated` : ''} · ${data.cell_degrees}° grid`}</span>
       </div>
     </>
   )

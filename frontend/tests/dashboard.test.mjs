@@ -48,6 +48,7 @@ test('event links only allow HTTP and HTTPS URLs', () => {
   assert.equal(sourceLink('https://example.com/story'), 'https://example.com/story')
   assert.equal(sourceLink('javascript:alert(1)'), null)
   assert.equal(sourceLink('/relative'), null)
+  assert.equal(sourceLink('https://example.com@other.example/story'), null)
 })
 
 test('a polygon crossing the date line is drawn on both edges without a transglobal line', () => {

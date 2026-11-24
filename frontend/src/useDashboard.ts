@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import {
   getEvents, queryParams, request,
   type Analytics, type Bucket, type Country, type EventPage, type Filters, type Freshness,
-  type Spike, type Tension,
 } from './api'
 
 const POLL_INTERVAL = 60_000
@@ -47,11 +46,24 @@ export function useFreshness(refresh: number) {
   return state
 }
 
-type Indicator<T> = { rows: T[]; unavailable: boolean }
 type Snapshot = {
   key: string; scope: string; filters: Filters; bucket: Bucket
-  analytics: Analytics; events: EventPage; countries: Country[]
-  spikes: Indicator<Spike>; tension: Indicator<Tension>; refreshedAt: string
+  analytics: Analytics; events: EventPage; refreshedAt: string
+}
+
+export function useResource<T>(path: string | null, refresh = 0) {
+  const [snapshot, setSnapshot] = useState<{ path: string; refresh: number; data?: T; error: boolean }>()
+  useEffect(() => {
+    if (!path) return
+    const controller = new AbortController()
+    request<T>(path, controller.signal).then(
+      (data) => { if (!controller.signal.aborted) setSnapshot({ path, refresh, data, error: false }) },
+      () => { if (!controller.signal.aborted) setSnapshot({ path, refresh, error: true }) },
+    )
+    return () => controller.abort()
+  }, [path, refresh])
+  const active = snapshot && snapshot.path === path && snapshot.refresh === refresh ? snapshot : undefined
+  return { data: active?.data, error: active?.error ?? false, loading: Boolean(path && !active) }
 }
 
 export function useDashboard(filters: Filters, bucket: Bucket, scope: string, enabled: boolean, refresh: number) {
@@ -60,7 +72,7 @@ export function useDashboard(filters: Filters, bucket: Bucket, scope: string, en
   const [pageFailedKey, setPageFailedKey] = useState<string | null>(null)
   const [loadingPage, setLoadingPage] = useState(false)
   const pageRequest = useRef<AbortController | null>(null)
-  const countryCache = useRef<{ key: string; rows: Country[] } | null>(null)
+  const countries = useResource<{ rows: Country[] }>('/countries').data?.rows ?? NO_COUNTRIES
   const { start, end, country, category } = filters
   const key = JSON.stringify([start, end, country, category, bucket, refresh])
 
@@ -68,39 +80,17 @@ export function useDashboard(filters: Filters, bucket: Bucket, scope: string, en
     if (!enabled) return
     const controller = new AbortController()
     const currentFilters = { start, end, country, category }
-    const filterQuery = queryParams(currentFilters)
-    const analyticsQuery = queryParams(currentFilters, { bucket })
-    const windowKey = JSON.stringify([start, end, refresh])
+    const analyticsQuery = queryParams(currentFilters, { bucket, include_map: 'false' })
 
     const analytics = request<Analytics>(`/analytics?${analyticsQuery}`, controller.signal)
-    const countries = !country && !category
-      ? analytics.then((response) => response.country_counts)
-      : countryCache.current?.key === windowKey
-        ? Promise.resolve(countryCache.current.rows)
-        : request<Analytics>(`/analytics?${queryParams({ start, end }, { bucket: 'day' })}`, controller.signal)
-          .then((response) => response.country_counts)
-          .catch(() => null)
-
-    async function indicator<T>(path: string): Promise<Indicator<T>> {
-      try {
-        const result = await request<{ rows: T[] }>(`/${path}?${filterQuery}`, controller.signal)
-        return { rows: result.rows, unavailable: false }
-      } catch {
-        return { rows: [], unavailable: true }
-      }
-    }
-
-    Promise.all([analytics, getEvents(currentFilters, controller.signal), countries,
-      indicator<Spike>('spikes'), indicator<Tension>('tension')])
-      .then(([summary, events, countryRows, spikes, tension]) => {
+    Promise.all([analytics, getEvents(currentFilters, controller.signal)])
+      .then(([summary, events]) => {
         if (controller.signal.aborted) return
-        if (countryRows) countryCache.current = { key: windowKey, rows: countryRows }
         setFailedKey(null)
         setPageFailedKey(null)
         setSnapshot({
           key, scope, filters: currentFilters, bucket, analytics: summary, events,
-          countries: countryRows ?? summary.country_counts,
-          spikes, tension, refreshedAt: new Date().toISOString(),
+          refreshedAt: new Date().toISOString(),
         })
       })
       .catch(() => {
@@ -142,6 +132,6 @@ export function useDashboard(filters: Filters, bucket: Bucket, scope: string, en
 
   return {
     data, loading, error, loadMore, loadingPage, pageError: pageFailedKey === key,
-    countries: snapshot?.countries ?? NO_COUNTRIES,
+    countries,
   }
 }

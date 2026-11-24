@@ -5,6 +5,10 @@ export type Sample = { bucket_start: string; count: number }
 export type Coverage = { bucket_start: string; expected_exports: number; completed_exports: number }
 export type Country = { country_code: string | null; country_name: string; count: number }
 export type Cell = { latitude: number; longitude: number; count: number }
+export type MapData = {
+  cell_degrees: number; cells: (Cell & { grid_south: number; grid_west: number })[]
+  viewport_events: number; omitted_events: number
+}
 
 export type Analytics = {
   summary: { total_events: number; geolocated_events: number; countries_with_events: number }
@@ -13,7 +17,7 @@ export type Analytics = {
   country_counts: Country[]
   country_counts_truncated: boolean
   category_counts: { primary_category: string; count: number }[]
-  map: { cell_degrees: number; cells: Cell[]; omitted_events: number }
+  map: { cell_degrees: number; cells: Cell[]; omitted_events: number } | null
 }
 
 export type Event = {
@@ -28,19 +32,34 @@ export type Event = {
   country_code: string | null
   country_name: string
   location_name: string | null
+  original_country_code: string | null
+  geographic_precision: 'none' | 'country' | 'administrative_area' | 'locality' | 'unknown'
+  country_status: 'mapped' | 'missing' | 'unmapped'
   primary_category: string
   source_url: string | null
 }
 
 export type Cursor = { before_time: string; before_id: number }
 export type EventPage = { rows: Event[]; next_cursor: Cursor | null }
-export type Spike = {
-  country_name: string; category: string; recent_count: number
-  baseline_avg: number; z_score: number | null; lift_ratio: number
+export type Period = Window & { completed: number; expected: number; observed: number }
+export type Comparison = {
+  current: Period; previous: Period
+  absolute_change: number | null; percent_change: number | null
 }
-export type Tension = {
-  actor1: string; actor2: string; category: string
-  event_count: number; avg_tone: number; worst_tone: number
+export type History = {
+  comparison_24h: Comparison
+  comparison_7d: Comparison
+  daily: (Period & { count: number | null; rolling_average: number | null })[]
+  anomaly: {
+    status: 'incomplete_observation' | 'insufficient_history' | 'low_baseline_volume' | 'elevated' | 'within_threshold'
+    baseline_samples: number; minimum_samples: number; observed: number | null
+    expected: number | null; robust_scale: number | null; score: number | null
+  }
+}
+export type CountryProfile = {
+  country_code: string; country_name: string
+  locations: { label: string; count: number }[]
+  sources: { label: string; count: number }[]
 }
 export type Freshness = {
   latest_export_time_utc: string | null

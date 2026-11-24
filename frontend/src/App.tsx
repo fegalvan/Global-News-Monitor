@@ -3,7 +3,8 @@ import type { FormEvent } from 'react'
 import { Activity, ChartNoAxesColumn, CircleAlert, Globe2, List, MapPin, Radio, RefreshCw } from 'lucide-react'
 import type { Bucket, Window } from './api'
 import { capitalize, categories, count, customWindow, freshnessStatus, liveWindow, utc } from './format'
-import { CategoryChart, CountryChart, EventFeed, Indicators, PanelHeading } from './Panels'
+import { CategoryChart, CountryChart, EventFeed, PanelHeading } from './Panels'
+import { CountryOverview, HistoricalAnalysis } from './Intelligence'
 import { useDashboard, useFreshness } from './useDashboard'
 
 const ActivityMap = lazy(() => import('./ActivityMap'))
@@ -11,7 +12,7 @@ const VolumeChart = lazy(() => import('./VolumeChart'))
 const screens = [
   { id: 'overview', label: 'Overview', icon: Globe2 },
   { id: 'events', label: 'Events', icon: List },
-  { id: 'indicators', label: 'Indicators', icon: Activity },
+  { id: 'indicators', label: 'Trends', icon: Activity },
 ]
 
 export default function App() {
@@ -23,6 +24,7 @@ export default function App() {
   const [customOpen, setCustomOpen] = useState(false)
   const [rangeError, setRangeError] = useState(false)
   const [refresh, setRefresh] = useState(0)
+  const [profileFocus, setProfileFocus] = useState(0)
   const freshness = useFreshness(refresh)
   const exportTime = mode === 'custom' ? null : freshness.data?.latest_export_time_utc ?? null
   const window = useMemo(
@@ -40,7 +42,16 @@ export default function App() {
     (a, b) => a.country_name.localeCompare(b.country_name) || a.country_code!.localeCompare(b.country_code!),
   ), [board.countries])
   const toggleCountry = useCallback((code: string) => setCountry((previous) => previous === code ? '' : code), [])
+  const openCountry = useCallback((code: string) => {
+    setCountry(code)
+    setProfileFocus((current) => current + 1)
+  }, [])
   const toggleCategory = (code: string) => setCategory((previous) => previous === code ? '' : code)
+  const countryName = countries.find((row) => row.country_code === country)?.country_name ?? country
+
+  useEffect(() => {
+    if (profileFocus) document.getElementById('country-profile')?.focus()
+  }, [profileFocus])
 
   useEffect(() => {
     const updateNavigation = () => setNavigation(location.hash.slice(1) || 'overview')
@@ -130,18 +141,18 @@ export default function App() {
 
         <section className="filters-panel" aria-label="Dashboard filters">
           <div className="filter-grid">
-            <label>Country<select value={country} onChange={(event) => setCountry(event.target.value)}>
+            <label>Country<select aria-label="Country" value={country} onChange={(event) => setCountry(event.target.value)}>
               <option value="">All countries</option>
               {country && !countries.some((row) => row.country_code === country) && <option value={country}>{country}</option>}
               {countries.map((row) => <option key={row.country_code} value={row.country_code ?? ''}>
                 {row.country_name} ({row.country_code})
               </option>)}
             </select></label>
-            <label>Category<select value={category} onChange={(event) => setCategory(event.target.value)}>
+            <label>Category<select aria-label="Category" value={category} onChange={(event) => setCategory(event.target.value)}>
               <option value="">All categories</option>
               {categories.map((item) => <option key={item} value={item}>{capitalize(item)}</option>)}
             </select></label>
-            <label>Time window<select value={customOpen ? 'custom' : mode} onChange={(event) => changeMode(event.target.value)}>
+            <label>Time window<select aria-label="Time window" value={customOpen ? 'custom' : mode} onChange={(event) => changeMode(event.target.value)}>
               <option value="1">Last 24 hours</option>
               <option value="7">Last 7 days</option>
               <option value="custom">Custom range (UTC)</option>
@@ -152,6 +163,7 @@ export default function App() {
               Reset filters
             </button>
           </div>
+          {country && <a className="country-profile-link" href="#country-profile">View {countryName} profile</a>}
           {customOpen && (
             <form className="custom-range" onSubmit={applyCustom}>
               <label>Start (UTC)<input type="datetime-local" name="start" defaultValue={window.start.slice(0, 16)} required /></label>
@@ -187,14 +199,15 @@ export default function App() {
           ))}
         </section>
 
+        {country && <CountryOverview name={countryName} filters={board.data?.filters ?? null}
+          analytics={analytics} refresh={refresh} unavailable={board.error && !board.data} />}
+
         <div className="overview-grid">
           <section className="panel map-panel">
-            <PanelHeading title="Global activity map" subtitle="Event counts in 2° geographic cells">
-              {analytics && <span className="panel-meta">{count(analytics.map.cells.length)} cells</span>}
-            </PanelHeading>
+            <PanelHeading title="Activity map" subtitle="Zoom for smaller cells · Select a country to open its profile" />
             <Suspense fallback={<div className="map-frame map-fallback">Loading world map…</div>}>
-              <ActivityMap data={analytics?.map} countries={board.countries} activeCountry={country}
-                onCountry={toggleCountry} pending={board.loading} unavailable={board.error} />
+              <ActivityMap filters={board.data?.filters ?? null} countries={board.countries} activeCountry={country}
+                onCountry={openCountry} pending={board.loading} geolocated={analytics?.summary.geolocated_events} refresh={refresh} />
             </Suspense>
           </section>
           <div className="overview-side">
@@ -208,13 +221,13 @@ export default function App() {
 
         <div className="analysis-grid">
           <CategoryChart analytics={analytics} category={category} onCategory={toggleCategory} loading={board.loading} />
-          <Indicators spikes={board.data?.spikes} tension={board.data?.tension} loading={board.loading}
-            hours={(Date.parse(displayedWindow.end) - Date.parse(displayedWindow.start)) / 3_600_000} />
+          <HistoricalAnalysis filters={board.data?.filters ?? null} refresh={refresh}
+            unavailable={board.error && !board.data} />
         </div>
         <EventFeed page={board.data?.events} loading={board.loading} loadingPage={board.loadingPage}
           pageError={board.pageError} loadMore={board.loadMore} />
         <footer className="workspace-footer">
-          <span>Source: GDELT Event Database · All times UTC</span>
+          <span>GDELT reflects media reporting and coding. Counts are an incomplete and uneven view of real-world activity.</span>
           <span>Latest reported event date {freshness.data?.latest_event_occurrence_date ?? '—'}</span>
         </footer>
       </main>
