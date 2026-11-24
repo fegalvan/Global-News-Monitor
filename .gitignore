@@ -138,6 +138,9 @@ celerybeat.pid
 .env
 .envrc
 .venv
+/frontend/node_modules/
+/frontend/.env.local
+/frontend/.env.*.local
 env/
 venv/
 ENV/
