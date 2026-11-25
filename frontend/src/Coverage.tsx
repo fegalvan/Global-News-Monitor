@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ExternalLink } from 'lucide-react'
 import { queryParams, type Filters, type SourceCoverage } from './api'
-import { capitalize, count, sourceLink, utc } from './format'
+import { categoryLabel, count, precisionLabels, sourceLink, utc } from './format'
 import { PanelHeading } from './Panels'
 import { useResource } from './useDashboard'
 
@@ -11,6 +11,7 @@ export function Coverage({ filters, placeName, scope, refresh, unavailable, requ
   const section = useRef<HTMLElement>(null)
   const [visible, setVisible] = useState(false)
   const [retry, setRetry] = useState(0)
+  const [order, setOrder] = useState<'varied' | 'recent'>('varied')
   const [selection, setSelection] = useState({ scope: '', domain: '' })
   const domain = selection.scope === scope ? selection.domain : ''
 
@@ -27,25 +28,33 @@ export function Coverage({ filters, placeName, scope, refresh, unavailable, requ
   }, [])
 
   const basePath = filters ? `/coverage?${queryParams(filters)}` : null
-  const path = basePath && domain ? `${basePath}&${new URLSearchParams({ domain })}` : basePath
+  const path = basePath ? `${basePath}&${new URLSearchParams(domain ? { domain, order: 'recent' } : { order })}` : null
   const query = useResource<SourceCoverage>(path, refresh + retry, visible || requested)
   const data = query.data
   const previous = query.snapshot
-  const summary = data ?? (basePath && (previous?.path === basePath || previous?.path.startsWith(`${basePath}&domain=`))
+  const summary = data ?? (basePath && previous?.path.startsWith(`${basePath}&`)
     ? previous.data : undefined)
 
   return (
     <section ref={section} className="panel coverage-panel" id="coverage" tabIndex={-1}>
-      <PanelHeading title="News coverage"
-        subtitle={`${placeName} · ${filters?.category ? capitalize(filters.category) : 'All categories'} · Original source links`}>
+      <PanelHeading title="Original GDELT links"
+        subtitle={`${placeName} · ${filters?.category ? categoryLabel(filters.category) : 'All categories'}`}>
         <a href="#events" className="outline-button">View event records</a>
       </PanelHeading>
       {summary ? (
         <div className="coverage-content">
+          <p className="coverage-note">These links come from automated GDELT records and can include background mentions.</p>
           <p className="coverage-counts">
             <span><strong>{count(summary.unique_urls)}</strong> distinct article links</span>
             <span><strong>{count(summary.linked_records)}</strong> of {count(summary.inspected_records)} inspected records with links</span>
           </p>
+          {summary.unique_urls > 0 && !domain && <label className="coverage-sort">Show links by
+            <select aria-label="Order original links" value={order}
+              onChange={(event) => setOrder(event.target.value === 'recent' ? 'recent' : 'varied')}>
+              <option value="varied">Varied sources</option>
+              <option value="recent">Most recent</option>
+            </select>
+          </label>}
           {summary.truncated && <p className="coverage-note">Showing coverage from the newest {count(summary.inspected_records)} matching records, back to {utc(summary.earliest_inspected)}. Narrow the filters to explore more of the window.</p>}
           {(summary.domains.length > 0 || domain) && (
             <>
@@ -80,10 +89,16 @@ export function Coverage({ filters, placeName, scope, refresh, unavailable, requ
                       {href ? <a href={href} target="_blank" rel="noopener noreferrer">
                         {article.domain} <span className="sr-only">(opens in a new tab)</span><ExternalLink size={13} aria-hidden="true" />
                       </a> : <strong>{article.domain}</strong>}
-                      <span className="event-category">{capitalize(article.category)}</span>
+                      <span className="event-category">{categoryLabel(article.category)}</span>
                     </div>
-                    <span className="coverage-classification">{article.event_label}</span>
+                    <span className="coverage-classification">GDELT coded {article.event_label}</span>
                     <small>{utc(article.latest_record_time)} · {count(article.record_count)} {article.record_count === 1 ? 'record' : 'records'} in this sample</small>
+                    <details className="coverage-record-details">
+                      <summary>Record details</summary>
+                      <small>Location in record: {article.location_name || article.country_name} · {precisionLabels[article.geographic_precision]}</small>
+                      <small>Named in record: {[article.actor1_name, article.actor2_name].filter(Boolean).join(' / ') || 'Unavailable'}</small>
+                      {article.gdelt_id && <small>GDELT ID {article.gdelt_id}{article.event_code && ` · CAMEO ${article.event_code}`}</small>}
+                    </details>
                   </li>
                 )
               })}
@@ -92,7 +107,7 @@ export function Coverage({ filters, placeName, scope, refresh, unavailable, requ
             : 'No usable article links here. Event details and links are available for up to 17 days.'}</p>}
           <details className="coverage-note">
             <summary>How links are counted</summary>
-            <p>GNM groups identical stored URLs. Different versions of a URL can point to the same story. One link can appear in several event records. Each row shows the latest matching record’s event label and time. Source counts refer to distinct links in the inspected records.</p>
+            <p>GNM groups identical stored URLs and shows the most recent matching record for each one. Varied sources brings more publishers into view and favors recent records with more detail. Most recent shows links in time order. Both views use the same records and counts.</p>
           </details>
         </div>
       ) : null}

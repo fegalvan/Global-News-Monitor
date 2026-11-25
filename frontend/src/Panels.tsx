@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import { ExternalLink } from 'lucide-react'
 import type { Analytics, EventPage } from './api'
-import { capitalize, categoryColors, count, sourceLink, utc } from './format'
+import { categoryLabel, categoryColors, count, precisionLabels, sourceLink, utc } from './format'
 
 export function PanelHeading({ title, subtitle, children }: { title: string; subtitle?: string; children?: ReactNode }) {
   return (
@@ -63,7 +63,7 @@ export function CategoryChart({ analytics, category, onCategory, loading }: {
             {rows.map(({ primary_category: label, count: value }) => (
               <li key={label}>
                 <button type="button" aria-pressed={category === label} onClick={() => onCategory(label)}>
-                  <i style={{ background: categoryColors[label] }} />{capitalize(label)}
+                  <i style={{ background: categoryColors[label] }} />{categoryLabel(label)}
                   <span>{count(value)}</span><span>{(100 * value / total).toFixed(1)}%</span>
                 </button>
               </li>
@@ -105,14 +105,18 @@ export function EventFeed({ page, loading, loadingPage, pageError, loadMore }: {
                     <td data-label="Location">
                       <strong>{event.country_name}</strong>
                       {event.location_name && <span className="row-detail">{event.location_name}</span>}
-                      {event.geographic_precision && event.geographic_precision !== 'none' && event.geographic_precision !== 'unknown'
-                        && <span className="row-detail">Location detail · {event.geographic_precision.replace('_', ' ')}</span>}
+                      {event.geographic_precision && <span className="row-detail">{precisionLabels[event.geographic_precision]}</span>}
                       {event.country_status === 'unmapped' && <span className="row-detail">Unmapped code {event.original_country_code}</span>}
                       {event.country_status === 'missing' && <span className="row-detail">Country absent in GDELT</span>}
                     </td>
-                    <td data-label="People or groups">{[event.actor1_name, event.actor2_name].filter(Boolean).join(' / ') || '—'}</td>
+                    <td data-label="People or groups">
+                      {[event.actor1_name, event.actor2_name].filter(Boolean).join(' / ') || '—'}
+                      {[event.actor1_country_name, event.actor2_country_name].some(Boolean) && <span className="row-detail">
+                        Affiliations: {[event.actor1_country_name, event.actor2_country_name].filter(Boolean).join(' / ')}
+                      </span>}
+                    </td>
                     <td data-label="Category"><span className="event-category">
-                      <i style={{ background: categoryColors[event.primary_category] }} />{capitalize(event.primary_category)}
+                      <i style={{ background: categoryColors[event.primary_category] }} />{categoryLabel(event.primary_category)}
                     </span></td>
                     <td data-label="Record time"><time dateTime={event.event_time_utc}>{utc(event.event_time_utc)}</time>
                       {event.event_date && <span className="row-detail">Event date {event.event_date}</span>}

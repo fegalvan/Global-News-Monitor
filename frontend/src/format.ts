@@ -13,7 +13,16 @@ export const categoryColors: Record<string, string> = {
   conflict: '#df8a83', crisis: '#daa66c', cyber: '#b49adc', diplomacy: '#62cbb7',
   economics: '#83aef0', politics: '#b0bdcf', protest: '#d5bf73',
 }
-export const capitalize = (label: string) => label.charAt(0).toUpperCase() + label.slice(1)
+export function categoryLabel(category: string) {
+  if (category === 'diplomacy') return 'Statements & diplomacy'
+  if (category === 'conflict') return 'Conflict & military'
+  return category.charAt(0).toUpperCase() + category.slice(1)
+}
+
+export const precisionLabels = {
+  country: 'Country level', administrative_area: 'Region or state', locality: 'Locality',
+  unknown: 'Precision unavailable', none: 'No location in record',
+}
 export const count = (value: number) => numberFormat.format(value)
 export const utc = (iso: string | null) => iso ? `${dateTime.format(new Date(iso))} UTC` : '—'
 

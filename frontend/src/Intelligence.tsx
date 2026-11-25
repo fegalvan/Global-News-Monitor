@@ -1,6 +1,6 @@
 import type { Analytics, Comparison, CountryProfile, Filters, History, Window } from './api'
 import { queryParams } from './api'
-import { capitalize, count, utc } from './format'
+import { categoryLabel, count, utc } from './format'
 import { PanelHeading } from './Panels'
 import { useResource } from './useDashboard'
 import { lazy, Suspense } from 'react'
@@ -13,6 +13,7 @@ const anomalyLabels: Record<History['anomaly']['status'], string> = {
   low_baseline_volume: 'Too few typical records to flag an increase reliably',
   elevated: 'Unusually high reporting activity',
   within_threshold: 'No unusual increase flagged',
+  category_rules_changed: 'This period uses older category rules',
 }
 
 function signed(value: number, digits = 0) {
@@ -32,17 +33,20 @@ function Change({ title, comparison, exploreCoverage }: {
     <div className="history-change">
       <h3>{title}</h3>
       {absolute_change === null
-        ? <strong>Incomplete coverage</strong>
+        ? <strong>{comparison.category_rules_changed && current.completed === current.expected
+          && previous.completed === previous.expected ? 'Category rules differ' : 'Incomplete coverage'}</strong>
         : <strong>{signed(absolute_change)} records{percent_change === null ? '' : ` · ${signed(percent_change, 1)}%`}</strong>}
       <p>Current {observed(current)} · Previous {observed(previous)}</p>
-      {absolute_change === null && <small>Source updates {current.completed}/{current.expected} current · {previous.completed}/{previous.expected} previous</small>}
+      {absolute_change === null && (current.completed !== current.expected || previous.completed !== previous.expected)
+        && <small>Source updates {current.completed}/{current.expected} current · {previous.completed}/{previous.expected} previous</small>}
+      {comparison.category_rules_changed && <small>Older records use different category rules. Changes by category are unavailable for this comparison.</small>}
       {absolute_change !== null && percent_change === null && <small>Percent change needs at least 20 previous records.</small>}
       {shifts.length > 0 && <details>
         <summary>Changes by category</summary>
         <ul className="trend-shifts">{shifts.map((row) => <li key={row.category}>
-          <span>{capitalize(row.category)} · {count(row.previous)} → {count(row.current)}</span>
+          <span>{categoryLabel(row.category)} · {count(row.previous)} → {count(row.current)}</span>
           <button type="button" className="text-button" onClick={() => exploreCoverage(row.change > 0 ? current : previous, row.category)}
-            aria-label={`See ${capitalize(row.category)} coverage in the ${row.change > 0 ? 'current' : 'previous'} period`}>{signed(row.change)}</button>
+            aria-label={`See ${categoryLabel(row.category)} coverage in the ${row.change > 0 ? 'current' : 'previous'} period`}>{signed(row.change)}</button>
         </li>)}</ul>
         <small>Select a change to see links from the period with more records.</small>
       </details>}
@@ -65,6 +69,8 @@ export function HistoricalAnalysis({ filters, refresh, unavailable, exploreCover
       {data ? (
         <div className="history-content">
           <p className="history-time">Comparisons end at {utc(data.comparison_24h.current.end)}.</p>
+          {filters?.category && data.category_history_from && data.daily.some((day) => Date.parse(day.start) < Date.parse(data.category_history_from!))
+            && <p className="history-time">The category chart starts with reclassified history on {utc(data.category_history_from)}.</p>}
           <div className="history-comparisons">
             <Change title="24 hours vs. prior 24 hours" comparison={data.comparison_24h} exploreCoverage={exploreCoverage} />
             <Change title="7 days vs. prior 7 days" comparison={data.comparison_7d} exploreCoverage={exploreCoverage} />

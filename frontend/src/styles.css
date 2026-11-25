@@ -310,6 +310,8 @@ tbody tr:hover { background: #182535; }
 .coverage-sources span { color: var(--muted); margin-left: .25rem; }
 .coverage-sources button[aria-pressed='true'] { background: #213b42; border-color: #567d80; }
 .coverage-source-select { display: none; }
+.coverage-sort { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; margin: .65rem 0; color: var(--muted); font-size: .83rem; }
+.coverage-sort select { min-height: 2.15rem; padding: .3rem .45rem; color: #ecf3fa; border: 1px solid #354659; border-radius: .3rem; background: #101923; }
 .coverage-articles {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); gap: .55rem;
   list-style: none; padding: 0;
@@ -320,6 +322,7 @@ tbody tr:hover { background: #182535; }
 .coverage-articles a { font-weight: 650; font-size: .88rem; }
 .coverage-articles a svg { margin-left: .25rem; vertical-align: middle; }
 .coverage-classification { font-size: .85rem; }
+.coverage-record-details small { display: block; margin-top: .25rem; }
 .coverage-articles small { color: var(--muted); font-size: .75rem; }
 .event-reference a { overflow-wrap: anywhere; }
 @media (max-width: 490px) {

@@ -29,6 +29,8 @@ export type Event = {
   event_code: string | null
   actor1_name: string | null
   actor2_name: string | null
+  actor1_country_name: string | null
+  actor2_country_name: string | null
   country_code: string | null
   country_name: string
   location_name: string | null
@@ -48,20 +50,24 @@ export type SourceCoverage = {
   articles: {
     url: string; domain: string; record_count: number; latest_record_time: string
     category: string; event_label: string
+    actor1_name: string | null; actor2_name: string | null; gdelt_id: string | null; event_code: string | null
+    country_name: string; location_name: string | null; geographic_precision: Event['geographic_precision']
   }[]
 }
 export type Period = Window & { completed: number; expected: number; observed: number }
 export type Comparison = {
   current: Period; previous: Period
   absolute_change: number | null; percent_change: number | null
+  category_rules_changed?: boolean
   category_changes?: { category: string; current: number; previous: number; change: number }[]
 }
 export type History = {
   comparison_24h: Comparison
   comparison_7d: Comparison
   daily: (Period & { count: number | null; rolling_average: number | null })[]
+  category_history_from: string | null
   anomaly: {
-    status: 'incomplete_observation' | 'insufficient_history' | 'low_baseline_volume' | 'elevated' | 'within_threshold'
+    status: 'incomplete_observation' | 'insufficient_history' | 'low_baseline_volume' | 'elevated' | 'within_threshold' | 'category_rules_changed'
     baseline_samples: number; minimum_samples: number; observed: number | null
     expected: number | null; robust_scale: number | null; score: number | null
   }

@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react
 import type { FormEvent } from 'react'
 import { Activity, ChartNoAxesColumn, CircleAlert, Globe2, List, MapPin, Newspaper, Radio, RefreshCw } from 'lucide-react'
 import type { Bucket, Window } from './api'
-import { capitalize, categories, count, customWindow, freshnessStatus, liveWindow, readSelection, utc } from './format'
+import { categoryLabel, categories, count, customWindow, freshnessStatus, liveWindow, readSelection, utc } from './format'
 import { CategoryChart, CountryChart, EventFeed, PanelHeading } from './Panels'
 import { CountryOverview, HistoricalAnalysis } from './Intelligence'
 import { Coverage } from './Coverage'
@@ -124,7 +124,7 @@ export default function App() {
       detail: analytics?.summary.total_events
         ? `${(100 * analytics.summary.geolocated_events / analytics.summary.total_events).toFixed(1)}% of selected events`
         : 'Events with valid coordinates' },
-    { label: 'Most reported category', value: topCategory && capitalize(topCategory.primary_category), icon: ChartNoAxesColumn,
+    { label: 'Most reported category', value: topCategory && categoryLabel(topCategory.primary_category), icon: ChartNoAxesColumn,
       detail: topCategory ? `${count(topCategory.count)} events` : 'By event count' },
   ]
 
@@ -181,7 +181,7 @@ export default function App() {
             </select></label>
             <label>Category<select aria-label="Category" value={category} onChange={(event) => setCategory(event.target.value)}>
               <option value="">All categories</option>
-              {categories.map((item) => <option key={item} value={item}>{capitalize(item)}</option>)}
+              {categories.map((item) => <option key={item} value={item}>{categoryLabel(item)}</option>)}
             </select></label>
             <label>Time window<select aria-label="Time window" value={customOpen ? 'custom' : mode} onChange={(event) => changeMode(event.target.value)}>
               <option value="1">Last 24 hours</option>
