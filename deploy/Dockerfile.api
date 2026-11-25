@@ -7,6 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends --only-upgrade 
 COPY requirements.txt .
 RUN python -m pip install --no-cache-dir --upgrade pip==26.2 \
     && python -m pip install --no-cache-dir -r requirements.txt \
+    && python -m pip check \
+    && python -m pip freeze --all > /usr/local/share/gnm-python-build.txt \
+    && python -m pip uninstall --yes pip \
+    && rm -rf /usr/local/lib/python3.12/ensurepip \
     && useradd --system gnm
 COPY alembic.ini .
 COPY migrations migrations
