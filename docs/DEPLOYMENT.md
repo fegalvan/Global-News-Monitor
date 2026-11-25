@@ -470,6 +470,56 @@ pre-migration backup only if the data corrections themselves must be
 reversed. Review any point-in-time restore cost and replay the exports
 ingested since the backup before switching traffic.
 
+## v1.2 migration and rollback
+
+Revision `0012_category_quality` changes the categories of retained records,
+updates hourly counts through the existing triggers, and creates two tables
+the API can read for recovered source context and the category history
+boundary. Older aggregate-only contributions retain their original categories.
+The cutoff depends on the database at migration time. [Local rehearsal and archive limits](V1.2_QUALITY_VALIDATION.md#migration-recovery-and-archive-limits)
+
+### Before switching images
+
+1. Record the running source revision, image IDs, Compose inputs, scheduler
+   status, and fixed-window baseline. Preserve the current images and
+   configuration. Verify the candidate image IDs and review the scan of those
+   exact images.
+2. Take a protected logical backup with a PostgreSQL client compatible with
+   the server and hostname-verified TLS. Restore it to an isolated
+   PostgreSQL/PostGIS database. Rehearse the upgrade, a failed transaction,
+   and downgrade before further ingestion. Compare raw fingerprints,
+   normalized identities, live and historical groups, and the new table grants.
+3. Pause the scheduler and coordinate manual writers. Record the final recovery
+   point and protect the archive in the backup. Keep the existing read service
+   available where the rehearsal shows it is safe. Run Alembic as the owner
+   with an explicit lock timeout. Validate the revision, invariants, and role
+   grants before starting the candidate API and web containers.
+4. After the application checks pass, resume the candidate scheduler and
+   observe consecutive successful exports. Compare the public API with the
+   baseline. Recover optional source context in bounded batches after the
+   switch. Run `scripts/backfill_gdelt_context.py` in dry-run mode for each
+   range first. Confirm matches, retry unavailable slots as needed, and check
+   map and rollup counts before extending the range. The source payloads stay
+   intact. Blank or unverifiable fields stay unknown.
+
+### If recovery is needed
+
+Keep ingestion paused until the schema, category rules, and writer version
+agree. Before any new ingestion or pruning, the rehearsed downgrade can use
+the saved category and coordinate values to restore v1.1 definitions. Verify
+rollup parity and archive totals before restarting the v1.1 writer. Running the
+v1.1 API on an upgraded database cannot reverse category changes. Restarting
+the v1.1 scheduler on that database would mix category definitions.
+
+After new writes, the downgrade guard may refuse the operation. Preserve the
+current database and export/checkpoint inventory. Use the verified pre-upgrade
+backup for data rollback and reconcile all exports completed since that
+backup before returning traffic. Check both identities and coverage, and
+preserve historical aggregates whose raw rows have expired. An archive-only
+count cannot be reconstructed reliably by downloading raw exports. If the
+rehearsal cannot preserve those counts and reconcile new writes, leave the
+current healthy version in place.
+
 ### Internal operations and external availability
 
 Run `bash deploy/check-host.sh <public-hostname>` from the repo on the VM.

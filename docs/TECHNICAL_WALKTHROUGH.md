@@ -409,8 +409,9 @@ Events fields it already collects and leaves the article on the publisher's
 site. [GDELT 2.0 Events and Mentions codebook](https://data.gdeltproject.org/documentation/GDELT-Event_Codebook-V2.0.pdf)
 
 The coverage query takes the latest 20,000 matching retained records in
-timestamp and ID order before joining the raw payload for links. It keeps
-ordinary HTTP(S) URLs with a public-style hostname, omitting credentials,
+timestamp and ID order, then looks up each raw payload by its primary key.
+That keeps URL lookup work bounded as the retained raw table grows. The query
+keeps ordinary HTTP(S) URLs with a public-style hostname, omitting credentials,
 nonstandard explicit ports, and malformed references. Identical stored URLs
 after trimming share a row. The query preserves different parameters,
 fragments, paths, and schemes because they can identify different resources.
