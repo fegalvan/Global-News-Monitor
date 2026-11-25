@@ -120,7 +120,7 @@ short_window AS (
 long_window AS (
     SELECT
         category,
-        COUNT(*) / 8.0 AS c_24h_hourly_avg
+        COUNT(*) / 24.0 AS c_24h_hourly_avg
     FROM events
     WHERE event_time >= NOW() - INTERVAL '24 hours'
     GROUP BY 1

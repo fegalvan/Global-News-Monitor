@@ -217,15 +217,15 @@ def fetch_freshness(connection):
         (SOURCE,),
     )
 
-def fetch_profile_details(connection, filters: EventFilters):
+def fetch_profile_details(connection, filters: EventFilters, *, include_sources: bool = True):
     where, params = filters.where()
     return fetch_all(
         connection,
         f"""
         WITH details AS (
             SELECT nullif(r.action_geo_full_name, '') AS location,
-                   lower(substring(btrim(r.raw_payload ->> 'SOURCEURL')
-                       from '(?i)^https?://([a-z0-9.-]+)(?::[0-9]{{1,5}})?(?:[/;?#]|$)')) AS host
+                   CASE WHEN %s THEN lower(substring(btrim(r.raw_payload ->> 'SOURCEURL')
+                       from '(?i)^https?://([a-z0-9.-]+)(?::[0-9]{{1,5}})?(?:[/;?#]|$)')) END AS host
             FROM normalized_events n JOIN raw_events r ON n.raw_event_id = r.id
             WHERE {where.replace("event_time_utc", "n.event_time_utc")}
         ),
@@ -239,7 +239,7 @@ def fetch_profile_details(connection, filters: EventFilters):
         ) ranked WHERE rank <= 8
         ORDER BY locations, rank
         """,
-        params,
+        (include_sources, *params),
     )
 
 

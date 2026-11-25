@@ -25,13 +25,15 @@ def fetch_source_coverage(connection, filters: EventFilters, domain: str | None)
         ), links AS (
             SELECT i.*, btrim(r.raw_payload ->> 'SOURCEURL') AS url
             FROM inspected i JOIN raw_events r ON i.raw_event_id = r.id
-        ), linked AS (
-            SELECT *, lower(substring(url from %s)) AS domain
-            FROM links WHERE url !~ '[[:space:][:cntrl:]]' AND strpos(url, chr(92)) = 0
-        ), articles AS MATERIALIZED (
-            SELECT url, domain, count(*) AS records, max(event_time_utc) AS last_seen,
+        ), grouped AS (
+            SELECT url, count(*) AS records, max(event_time_utc) AS last_seen,
                    (array_agg(event_id ORDER BY event_time_utc DESC, event_id DESC))[1] AS latest_id
-            FROM linked WHERE length(domain) <= 253 GROUP BY url, domain
+            FROM links WHERE url IS NOT NULL GROUP BY url
+        ), linked AS MATERIALIZED (
+            SELECT *, lower(substring(url from %s)) AS domain
+            FROM grouped WHERE url !~ '[[:space:][:cntrl:]]' AND strpos(url, chr(92)) = 0
+        ), articles AS MATERIALIZED (
+            SELECT * FROM linked WHERE length(domain) <= 253
         ), domains AS (
             SELECT domain, count(*) AS articles, sum(records)::int AS records
             FROM articles GROUP BY domain ORDER BY articles DESC, domain LIMIT 8

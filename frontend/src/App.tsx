@@ -63,6 +63,10 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (location.hash) document.getElementById(navigation)?.scrollIntoView()
+  }, [navigation])
+
+  useEffect(() => {
     const url = new URL(location.href)
     const params = { country, category, days: mode === '7' ? '7' : '',
       start: mode === 'custom' ? custom?.start : '', end: mode === 'custom' ? custom?.end : '' }
@@ -150,7 +154,7 @@ export default function App() {
           <div className="intro">
             <h1>Global reporting activity</h1>
             <p>See where events are reported, how coverage changes, and which articles are linked to the records.</p>
-            <p className="intro-note">GDELT identifies events in news reports using automated coding. Counts reflect available coverage and can include repeated reporting.</p>
+            <p className="intro-note">GDELT automatically codes events from news reports. The records can be incomplete, repeated, or misclassified.</p>
           </div>
           <div className="feed-status">
             <div className="feed-status-heading">
@@ -253,7 +257,8 @@ export default function App() {
           <HistoricalAnalysis filters={board.data?.filters ?? null} refresh={refresh}
             unavailable={board.error && !board.data} exploreCoverage={exploreCoverage} />
         </div>
-        <Coverage filters={board.data?.filters ?? null} scope={scope} refresh={refresh} unavailable={board.error && !board.data} />
+        <Coverage filters={board.data?.filters ?? null} scope={scope} refresh={refresh}
+          requested={navigation === 'coverage'} unavailable={board.error && !board.data} />
         <EventFeed page={board.data?.events} loading={board.loading} loadingPage={board.loadingPage}
           pageError={board.pageError} loadMore={board.loadMore} />
         <footer className="workspace-footer">

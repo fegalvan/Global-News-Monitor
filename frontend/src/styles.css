@@ -302,13 +302,14 @@ tbody tr:hover { background: #182535; }
 .history-chart > div { min-width: 0; }
 .coverage-panel { margin-bottom: .9rem; }
 .coverage-content { padding: 0 .9rem .9rem; }
-.coverage-content .coverage-note { padding: 0; margin-top: .6rem; }
+.coverage-content .coverage-note { margin: .6rem 0 .65rem; }
 .coverage-counts { display: flex; flex-wrap: wrap; gap: .3rem 1.1rem; color: var(--muted); font-size: .85rem; }
 .coverage-counts strong { color: #e3edf6; }
 .coverage-sources { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0; }
 .coverage-sources button { min-height: 2.15rem; max-width: 100%; overflow-wrap: anywhere; white-space: normal; }
 .coverage-sources span { color: var(--muted); margin-left: .25rem; }
 .coverage-sources button[aria-pressed='true'] { background: #213b42; border-color: #567d80; }
+.coverage-source-select { display: none; }
 .coverage-articles {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); gap: .55rem;
   list-style: none; padding: 0;
@@ -316,8 +317,9 @@ tbody tr:hover { background: #182535; }
 .coverage-articles li { display: grid; align-content: start; min-width: 0; gap: .42rem; padding: .65rem .72rem;
   border: 1px solid var(--border); border-radius: .4rem; background: #152230; overflow-wrap: anywhere; }
 .coverage-article-heading { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: baseline; gap: .35rem; font-size: .88rem; }
-.coverage-articles a { justify-self: start; font-size: .83rem; }
+.coverage-articles a { font-weight: 650; font-size: .88rem; }
 .coverage-articles a svg { margin-left: .25rem; vertical-align: middle; }
+.coverage-classification { font-size: .85rem; }
 .coverage-articles small { color: var(--muted); font-size: .75rem; }
 .event-reference a { overflow-wrap: anywhere; }
 @media (max-width: 490px) {
@@ -325,4 +327,8 @@ tbody tr:hover { background: #182535; }
   .sidebar nav a { font-size: .76rem; text-align: center; padding-inline: .2rem; }
   .sidebar nav svg { display: none; }
   .coverage-panel .panel-heading { align-items: flex-start; flex-wrap: wrap; }
+  .coverage-sources { display: none; }
+  .coverage-source-select { display: grid; gap: .3rem; margin: .8rem 0; color: var(--muted); font-size: .83rem; }
+  .coverage-source-select select { min-height: 2.3rem; min-width: 0; padding: .4rem; color: #ecf3fa;
+    border: 1px solid #354659; border-radius: .3rem; background: #101923; }
 }

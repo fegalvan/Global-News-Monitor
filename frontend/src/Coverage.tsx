@@ -5,8 +5,8 @@ import { capitalize, count, sourceLink, utc } from './format'
 import { PanelHeading } from './Panels'
 import { useResource } from './useDashboard'
 
-export function Coverage({ filters, scope, refresh, unavailable }: {
-  filters: Filters | null; scope: string; refresh: number; unavailable: boolean
+export function Coverage({ filters, scope, refresh, unavailable, requested }: {
+  filters: Filters | null; scope: string; refresh: number; unavailable: boolean; requested: boolean
 }) {
   const section = useRef<HTMLElement>(null)
   const [visible, setVisible] = useState(false)
@@ -28,7 +28,7 @@ export function Coverage({ filters, scope, refresh, unavailable }: {
 
   const basePath = filters ? `/coverage?${queryParams(filters)}` : null
   const path = basePath && domain ? `${basePath}&${new URLSearchParams({ domain })}` : basePath
-  const query = useResource<SourceCoverage>(path, refresh + retry, visible)
+  const query = useResource<SourceCoverage>(path, refresh + retry, visible || requested)
   const data = query.data
   const previous = query.snapshot
   const summary = data ?? (basePath && (previous?.path === basePath || previous?.path.startsWith(`${basePath}&domain=`))
@@ -47,16 +47,27 @@ export function Coverage({ filters, scope, refresh, unavailable }: {
           </p>
           {summary.truncated && <p className="coverage-note">Showing coverage from the newest {count(summary.inspected_records)} matching records, back to {utc(summary.earliest_inspected)}. Narrow the filters to explore more of the window.</p>}
           {(summary.domains.length > 0 || domain) && (
-            <div className="coverage-sources" role="group" aria-label="Filter recent links by source domain">
-              <button type="button" className="outline-button" aria-pressed={!domain}
-                onClick={() => setSelection({ scope, domain: '' })}>All sources</button>
-              {summary.domains.map((source) => (
-                <button type="button" className="outline-button" key={source.domain} aria-pressed={domain === source.domain}
-                  onClick={() => setSelection({ scope, domain: source.domain })}>
-                  {source.domain} <span>{count(source.articles)}</span>
-                </button>
-              ))}
-            </div>
+            <>
+              <div className="coverage-sources" role="group" aria-label="Filter recent links by source domain">
+                <button type="button" className="outline-button" aria-pressed={!domain}
+                  onClick={() => setSelection({ scope, domain: '' })}>All sources</button>
+                {summary.domains.map((source) => (
+                  <button type="button" className="outline-button" key={source.domain} aria-pressed={domain === source.domain}
+                    onClick={() => setSelection({ scope, domain: source.domain })}>
+                    {source.domain} <span>{count(source.articles)}</span>
+                  </button>
+                ))}
+              </div>
+              <label className="coverage-source-select">Source
+                <select aria-label="Source domain" value={domain} onChange={(event) => setSelection({ scope, domain: event.target.value })}>
+                  <option value="">All sources</option>
+                  {domain && !summary.domains.some((source) => source.domain === domain) && <option value={domain}>{domain}</option>}
+                  {summary.domains.map((source) => <option key={source.domain} value={source.domain}>
+                    {source.domain} ({count(source.articles)} links)
+                  </option>)}
+                </select>
+              </label>
+            </>
           )}
           {data?.articles.length ? (
             <ul className="coverage-articles">
@@ -65,12 +76,12 @@ export function Coverage({ filters, scope, refresh, unavailable }: {
                 return (
                   <li key={article.url}>
                     <div className="coverage-article-heading">
-                      <strong>{article.event_label}</strong>
+                      {href ? <a href={href} target="_blank" rel="noopener noreferrer">
+                        {article.domain} <span className="sr-only">(opens in a new tab)</span><ExternalLink size={13} aria-hidden="true" />
+                      </a> : <strong>{article.domain}</strong>}
                       <span className="event-category">{capitalize(article.category)}</span>
                     </div>
-                    {href ? <a href={href} target="_blank" rel="noopener noreferrer">
-                      {article.domain} <span className="sr-only">(opens in a new tab)</span><ExternalLink size={13} aria-hidden="true" />
-                    </a> : <span>{article.domain}</span>}
+                    <span className="coverage-classification">{article.event_label}</span>
                     <small>{utc(article.latest_record_time)} · {count(article.record_count)} {article.record_count === 1 ? 'record' : 'records'} in this sample</small>
                   </li>
                 )
@@ -86,7 +97,8 @@ export function Coverage({ filters, scope, refresh, unavailable }: {
       ) : null}
       {query.error || unavailable ? (
         <div className="coverage-content"><p role="alert">News coverage is temporarily unavailable.</p>
-          <button type="button" className="outline-button" onClick={() => setRetry((previous) => previous + 1)}>Retry coverage</button></div>
+          {query.error && <button type="button" className="outline-button"
+            onClick={() => setRetry((previous) => previous + 1)}>Retry coverage</button>}</div>
       ) : !data && <p className="panel-empty" role="status">{domain ? `Loading links from ${domain}…` : 'Loading news coverage…'}</p>}
     </section>
   )

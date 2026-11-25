@@ -19,7 +19,7 @@ function Empty({ children }: { children: ReactNode }) {
 export function CountryChart({ analytics, country, onCountry, loading }: {
   analytics?: Analytics; country: string; onCountry: (code: string) => void; loading: boolean
 }) {
-  const ranks = analytics?.country_counts.slice(0, 5) ?? []
+  const ranks = analytics?.country_counts.filter((row) => row.country_code !== null).slice(0, 5) ?? []
   const maximum = ranks[0]?.count || 1
   return (
     <section className="panel ranking-panel">

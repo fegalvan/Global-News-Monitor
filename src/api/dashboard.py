@@ -153,12 +153,12 @@ def countries():
 
 
 @router.get("/country-profile")
-def country_profile(params: DashboardFilters):
+def country_profile(params: DashboardFilters, include_sources: bool = True):
     filters = params.window()
     if filters.country not in COUNTRY_NAME_BY_CODE:
         raise HTTPException(422, "Select a mapped GDELT geographic country.")
     with get_connection() as connection:
-        rows = fetch_profile_details(connection, filters)
+        rows = fetch_profile_details(connection, filters, include_sources=include_sources)
     return {
         "country_code": filters.country,
         "country_name": COUNTRY_NAME_BY_CODE[filters.country],

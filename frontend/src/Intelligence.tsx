@@ -102,7 +102,8 @@ export function HistoricalAnalysis({ filters, refresh, unavailable, exploreCover
 export function CountryOverview({ filters, analytics, name, refresh, unavailable }: {
   filters: Filters | null; analytics?: Analytics; name: string; refresh: number; unavailable: boolean
 }) {
-  const query = useResource<CountryProfile>(filters?.country ? `/country-profile?${queryParams(filters)}` : null, refresh)
+  const query = useResource<CountryProfile>(filters?.country
+    ? `/country-profile?${queryParams(filters, { include_sources: 'false' })}` : null, refresh)
   const coverage = analytics?.coverage.reduce((sum, row) =>
     ({ expected: sum.expected + row.expected_exports, completed: sum.completed + row.completed_exports }),
   { expected: 0, completed: 0 })
@@ -111,27 +112,23 @@ export function CountryOverview({ filters, analytics, name, refresh, unavailable
       <PanelHeading title={name} subtitle="Country profile based on the reported location of each event">
         <a href="#coverage" className="outline-button">Explore news coverage</a>
       </PanelHeading>
-      <div className="profile-content">
-        {analytics && <>
+      <div className="profile-content profile-lists">
+        {analytics && <div>
           <div className="profile-summary">
             <span><strong>{count(analytics.summary.total_events)}</strong> reported events</span>
           </div>
           <p className="profile-coverage">{count(analytics.summary.geolocated_events)} records with coordinates
             {' · '}{coverage?.completed ?? 0}/{coverage?.expected ?? 0} expected source updates processed.
             {' '}A map point can represent a country, region, or locality.</p>
-        </>}
-        {query.data ? (
-          <div className="profile-lists">
-            {([['Most reported locations', query.data.locations], ['Sources by record count', query.data.sources]] as const)
-              .map(([label, rows]) => <div key={label}>
-                <h3>{label}</h3>
-                {rows.length ? <ol>{rows.map((row) => <li key={row.label}>
-                  <span>{row.label}</span><strong>{count(row.count)}</strong>
-                </li>)}</ol> : <p>No detail available in this window.</p>}
-              </div>)}
-          </div>
-        ) : <p className="profile-coverage" role={query.error || unavailable ? 'alert' : 'status'}>{query.error || unavailable
-          ? 'Country details are unavailable. Refresh to retry.' : 'Loading country details…'}</p>}
+        </div>}
+        <div>
+          <h3>Most reported locations</h3>
+          {query.data ? query.data.locations.length ? <ol>{query.data.locations.map((row) => <li key={row.label}>
+            <span>{row.label}</span><strong>{count(row.count)}</strong>
+          </li>)}</ol> : <p>No location detail in this selection.</p>
+            : <p role={query.error || unavailable ? 'alert' : 'status'}>{query.error || unavailable
+              ? 'Country details are unavailable. Refresh to retry.' : 'Loading country details…'}</p>}
+        </div>
       </div>
     </section>
   )

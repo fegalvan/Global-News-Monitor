@@ -683,6 +683,8 @@ def test_map_and_profile_endpoints_are_bounded(dashboard_client, dashboard_windo
     assert profile.status_code == 200, profile.text
     assert profile.json()["country_name"] == "Canada"
     assert profile.json()["sources"] == [{"label": "report.example", "count": 1}]
+    locations = dashboard_client.get("/country-profile", params={**dashboard_window, "country": "CA", "include_sources": False})
+    assert locations.json() == {**profile.json(), "sources": []}
     events = dashboard_client.get("/events", params={**dashboard_window, "country": "CA"}).json()["rows"]
     assert events[0]["geographic_precision"] == "locality"
     assert events[0]["actor1_country_name"] == "United Kingdom"
@@ -792,3 +794,18 @@ def test_history_category_changes_match_raw_counts_for_complete_adjacent_windows
     pg_connection.execute("DELETE FROM event_history_coverage WHERE export_time_utc = %s", (split,))
     incomplete = dashboard_client.get("/history", params={"end": end.isoformat()}).json()
     assert incomplete["comparison_24h"]["category_changes"] == []
+
+
+def test_legacy_momentum_uses_hourly_rates_on_both_sides(pg_connection):
+    from src.main import MOMENTUM_SQL
+
+    now = pg_connection.execute("SELECT now() AS stamp").fetchone()["stamp"]
+    run_id = uuid4()
+    insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+    common = _build_event(run_id, "unused")
+    insert_raw_and_normalized_batch(pg_connection, [
+        dict(common, dedupe_key=f"momentum-{offset}", event_time_utc=now - timedelta(hours=offset, minutes=30))
+        for offset in range(24)
+    ])
+    result, = pg_connection.execute(MOMENTUM_SQL).fetchall()
+    assert (result["c_3h"], result["c_24h_hourly_avg"], result["momentum_ratio"]) == (3, 1, 1)
