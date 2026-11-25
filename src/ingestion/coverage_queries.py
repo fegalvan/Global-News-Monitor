@@ -18,6 +18,8 @@ def fetch_source_coverage(connection, filters: EventFilters, domain: str | None,
     varied = order == "varied" and domain is None
     context_order = "date_trunc('hour', last_seen, 'UTC') DESC, detail DESC, last_seen DESC, latest_id DESC"
     display_order = f"(publisher_rank - 1) / 2, {context_order}" if varied else "last_seen DESC, latest_id DESC"
+    # OFFSET 0 keeps each raw URL lookup tied to the capped slice. PostgreSQL
+    # otherwise chose to hash join by scanning the full raw table in Azure.
     return fetch_one(connection, f"""
         WITH recent AS MATERIALIZED (
             SELECT event_id, raw_event_id, event_time_utc
@@ -27,8 +29,11 @@ def fetch_source_coverage(connection, filters: EventFilters, domain: str | None,
         ), inspected AS (
             SELECT * FROM recent ORDER BY event_time_utc DESC, event_id DESC LIMIT %s
         ), links AS (
-            SELECT i.*, btrim(r.raw_payload ->> 'SOURCEURL') AS url
-            FROM inspected i JOIN raw_events r ON i.raw_event_id = r.id
+            SELECT i.*, raw_link.url
+            FROM inspected i JOIN LATERAL (
+                SELECT btrim(r.raw_payload ->> 'SOURCEURL') AS url
+                FROM raw_events r WHERE r.id = i.raw_event_id OFFSET 0
+            ) raw_link ON true
         ), grouped AS (
             SELECT url, count(*) AS records, max(event_time_utc) AS last_seen,
                    (array_agg(event_id ORDER BY event_time_utc DESC, event_id DESC))[1] AS latest_id
