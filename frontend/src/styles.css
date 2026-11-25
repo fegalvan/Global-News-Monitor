@@ -25,6 +25,7 @@ a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 [id] { scroll-margin-top: 1rem; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 .shell { min-height: 100vh; display: grid; grid-template-columns: 12.5rem minmax(0, 1fr); }
 .skip-link { position: fixed; left: 1rem; top: -4rem; z-index: 1200; padding: .65rem 1rem; background: var(--surface); }
@@ -57,6 +58,7 @@ a:hover { text-decoration: underline; }
 .overview-header { display: flex; justify-content: space-between; gap: 1.6rem; align-items: center; margin-bottom: 1.2rem; }
 .intro h1 { font-size: clamp(1.75rem, 3vw, 2.3rem); font-weight: 680; line-height: 1.1; letter-spacing: -.045em; }
 .intro p { margin-top: .55rem; color: var(--muted); line-height: 1.45; font-size: .97rem; max-width: 36rem; }
+.intro .intro-note { font-size: .82rem; }
 .feed-status {
   flex: 0 0 min(26.75rem, 52%); background: #141d27; border: 1px solid var(--border); border-radius: 6px;
   padding: .6rem .75rem .68rem;
@@ -285,6 +287,12 @@ tbody tr:hover { background: #182535; }
 .profile-lists li span { overflow-wrap: anywhere; }
 .profile-lists p, .history-change p { margin: .35rem 0; color: var(--muted); font-size: .82rem; }
 .history-change small { display: block; color: var(--muted); font-size: .74rem; line-height: 1.45; }
+.history-change details { margin-top: .55rem; }
+.history-change summary, .coverage-panel summary { cursor: pointer; color: #a8d1e4; font-size: .8rem; }
+.trend-links { display: flex; flex-wrap: wrap; gap: .3rem .75rem; margin-top: .45rem; }
+.trend-links .text-button, .trend-shifts .text-button { min-height: 1.85rem; padding: 0; }
+.trend-shifts { list-style: none; padding: .35rem 0; }
+.trend-shifts li { display: flex; align-items: center; justify-content: space-between; gap: .45rem; font-size: .8rem; }
 .anomaly-card { margin-top: .75rem; }
 .anomaly-card p { margin: .35rem 0; }
 .anomaly-card summary { cursor: pointer; font-size: .8rem; color: #a8d1e4; }
@@ -292,6 +300,29 @@ tbody tr:hover { background: #182535; }
 .history-chart { margin: .85rem 0 0; }
 .history-chart figcaption { font-size: .78rem; color: var(--muted); }
 .history-chart > div { min-width: 0; }
+.coverage-panel { margin-bottom: .9rem; }
+.coverage-content { padding: 0 .9rem .9rem; }
+.coverage-content .coverage-note { padding: 0; margin-top: .6rem; }
+.coverage-counts { display: flex; flex-wrap: wrap; gap: .3rem 1.1rem; color: var(--muted); font-size: .85rem; }
+.coverage-counts strong { color: #e3edf6; }
+.coverage-sources { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0; }
+.coverage-sources button { min-height: 2.15rem; max-width: 100%; overflow-wrap: anywhere; white-space: normal; }
+.coverage-sources span { color: var(--muted); margin-left: .25rem; }
+.coverage-sources button[aria-pressed='true'] { background: #213b42; border-color: #567d80; }
+.coverage-articles {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 17rem), 1fr)); gap: .55rem;
+  list-style: none; padding: 0;
+}
+.coverage-articles li { display: grid; align-content: start; min-width: 0; gap: .42rem; padding: .65rem .72rem;
+  border: 1px solid var(--border); border-radius: .4rem; background: #152230; overflow-wrap: anywhere; }
+.coverage-article-heading { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: baseline; gap: .35rem; font-size: .88rem; }
+.coverage-articles a { justify-self: start; font-size: .83rem; }
+.coverage-articles a svg { margin-left: .25rem; vertical-align: middle; }
+.coverage-articles small { color: var(--muted); font-size: .75rem; }
+.event-reference a { overflow-wrap: anywhere; }
 @media (max-width: 490px) {
   .profile-lists, .history-comparisons { grid-template-columns: minmax(0, 1fr); }
+  .sidebar nav a { font-size: .76rem; text-align: center; padding-inline: .2rem; }
+  .sidebar nav svg { display: none; }
+  .coverage-panel .panel-heading { align-items: flex-start; flex-wrap: wrap; }
 }

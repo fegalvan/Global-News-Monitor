@@ -41,10 +41,20 @@ export type Event = {
 
 export type Cursor = { before_time: string; before_id: number }
 export type EventPage = { rows: Event[]; next_cursor: Cursor | null }
+export type SourceCoverage = {
+  inspected_records: number; linked_records: number; unique_urls: number
+  earliest_inspected: string | null; truncated: boolean
+  domains: { domain: string; articles: number; records: number }[]
+  articles: {
+    url: string; domain: string; record_count: number; latest_record_time: string
+    category: string; event_label: string
+  }[]
+}
 export type Period = Window & { completed: number; expected: number; observed: number }
 export type Comparison = {
   current: Period; previous: Period
   absolute_change: number | null; percent_change: number | null
+  category_changes?: { category: string; current: number; previous: number; change: number }[]
 }
 export type History = {
   comparison_24h: Comparison

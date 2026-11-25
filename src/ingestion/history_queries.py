@@ -6,6 +6,8 @@ from statistics import median
 
 from src.db import fetch_all
 
+MIN_PERCENT_BASELINE = 20
+
 
 def fetch_periods(connection, windows, country: str | None, category: str | None):
     conditions = ["h.historical_count > 0"]
@@ -44,8 +46,33 @@ def compare_periods(current: dict, previous: dict) -> dict:
         "current": current,
         "previous": previous,
         "absolute_change": change,
-        "percent_change": None if change is None or not previous_count else 100 * change / previous_count,
+        "percent_change": (
+            100 * change / previous_count if change is not None and previous_count >= MIN_PERCENT_BASELINE else None
+        ),
     }
+
+
+def fetch_category_changes(connection, comparison: dict, country: str | None) -> list[dict]:
+    if comparison["absolute_change"] is None:
+        return []
+    current, previous = comparison["current"], comparison["previous"]
+    country_clause = " AND country_code = %s" if country else ""
+    split = current["start"]
+    params = [split, split, previous["start"], current["end"]]
+    if country:
+        params.append(country)
+    return fetch_all(connection, f"""
+        WITH counts AS (
+            SELECT primary_category AS category,
+                   coalesce(sum(historical_count) FILTER (WHERE hour_utc >= %s), 0)::bigint AS current,
+                   coalesce(sum(historical_count) FILTER (WHERE hour_utc < %s), 0)::bigint AS previous
+            FROM event_hourly_counts
+            WHERE hour_utc >= %s AND hour_utc < %s AND historical_count > 0{country_clause}
+            GROUP BY primary_category
+        )
+        SELECT *, current - previous AS change
+        FROM counts ORDER BY abs(current - previous) DESC, category
+    """, params)
 
 
 def reporting_anomaly(current: dict, baseline: list[dict]) -> dict:
@@ -91,9 +118,14 @@ def fetch_history(connection, end: datetime, country: str | None, category: str 
     for index in range(6, len(daily)):
         counts = [row["count"] for row in daily[index - 6:index + 1]]
         daily[index]["rolling_average"] = None if None in counts else sum(counts) / 7
+    comparison_24h = compare_periods(results[0], results[1])
+    comparison_7d = compare_periods(results[2], results[3])
+    if not category:
+        for comparison in (comparison_24h, comparison_7d):
+            comparison["category_changes"] = fetch_category_changes(connection, comparison, country)
     return {
-        "comparison_24h": compare_periods(results[0], results[1]),
-        "comparison_7d": compare_periods(results[2], results[3]),
+        "comparison_24h": comparison_24h,
+        "comparison_7d": comparison_7d,
         "anomaly": reporting_anomaly(results[0], results[4:]),
         "daily": daily[6:],
     }

@@ -18,11 +18,11 @@ export const count = (value: number) => numberFormat.format(value)
 export const utc = (iso: string | null) => iso ? `${dateTime.format(new Date(iso))} UTC` : '—'
 
 const freshnessLabels = {
-  healthy: 'Fresh data',
-  source_stale: 'Source data stale',
-  ingestion_stale: 'Ingestion stale',
-  no_successful_ingest: 'Awaiting ingestion',
-  unavailable: 'API unavailable',
+  healthy: 'Updates arriving',
+  source_stale: 'Source updates delayed',
+  ingestion_stale: 'Dashboard updates delayed',
+  no_successful_ingest: 'Waiting for the first update',
+  unavailable: 'Update status unavailable',
   checking: 'Checking data',
 }
 
@@ -37,14 +37,28 @@ export function liveWindow(days: number, sourceExport: string | null, now = Date
   return { start: new Date(end - days * DAY).toISOString(), end: new Date(end).toISOString() }
 }
 
-export function customWindow(startInput: string, endInput: string): Window | null {
-  if (!startInput || !endInput) return null
-  const start = Date.parse(`${startInput}Z`)
-  const end = Date.parse(`${endInput}Z`)
+function validWindow(start: number, end: number): Window | null {
   if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || end - start > 30 * DAY) {
     return null
   }
   return { start: new Date(start).toISOString(), end: new Date(end).toISOString() }
+}
+
+export function customWindow(startInput: string, endInput: string): Window | null {
+  return validWindow(Date.parse(`${startInput}Z`), Date.parse(`${endInput}Z`))
+}
+
+export function readSelection(params: URLSearchParams) {
+  const country = params.get('country')?.toUpperCase() ?? ''
+  const category = params.get('category') ?? ''
+  const start = params.get('start') ?? ''
+  const end = params.get('end') ?? ''
+  const custom = start.endsWith('Z') && end.endsWith('Z') ? validWindow(Date.parse(start), Date.parse(end)) : null
+  const mode = custom ? 'custom' : params.get('days') === '7' ? '7' : '1'
+  return {
+    country: /^[A-Z]{2,3}$/.test(country) ? country : '', category: categories.includes(category) ? category : '',
+    custom, mode,
+  } as const
 }
 
 export function activitySeries(rows: Sample[], window: Window, bucket: Bucket, coverage: Coverage[]) {
@@ -64,11 +78,13 @@ export function activitySeries(rows: Sample[], window: Window, bucket: Bucket, c
   return series
 }
 
-export function sourceLink(value: string | null) {
-  if (!value) return null
+export function sourceLink(value: string | null, domain?: string) {
+  const trimmed = value?.trim()
+  if (!trimmed || !/^https?:\/\//i.test(trimmed) || /[\s\\\u0000-\u001f\u007f]/.test(trimmed)) return null
   try {
-    const url = new URL(value)
-    return !url.username && !url.password && (url.protocol === 'https:' || url.protocol === 'http:') ? url.href : null
+    const url = new URL(trimmed)
+    return !url.username && !url.password && (!domain || url.hostname === domain)
+      && (url.protocol === 'https:' || url.protocol === 'http:') ? url.href : null
   } catch {
     return null
   }

@@ -191,7 +191,7 @@ export default function ActivityMap({ filters, countries, activeCountry, onCount
       const inside = lat >= bounds.south && lat <= bounds.north && lng >= bounds.west && lng <= bounds.east
       const total = inside && cellCounts.get(`${cellOrigin(lat, -90, size)}:${cellOrigin(lng, -180, size)}`)
       if (total && instance) {
-        hover.setLatLng(latlng).setContent(tooltip(`${count(total)} reported events · ${size}° grid`)).addTo(instance)
+        hover.setLatLng(latlng).setContent(tooltip(`${count(total)} event records · ${size}° grid`)).addTo(instance)
       } else {
         hover.remove()
       }
@@ -240,11 +240,11 @@ export default function ActivityMap({ filters, countries, activeCountry, onCount
       </div>
       <div className="map-footer">
         <div className="map-legend" aria-label="Event count legend">
-          <span>Events per cell</span>
+          <span>Event records per cell</span>
           {bands.map(({ color, label }) => <span key={label}><i style={{ background: color }} />{label}</span>)}
         </div>
         <span>{data && `${count(data.viewport_events)} in view${geolocated !== undefined
-          ? ` of ${count(geolocated)} geolocated` : ''} · ${data.cell_degrees}° grid`}</span>
+          ? ` of ${count(geolocated)} with coordinates` : ''} · ${data.cell_degrees}° grid`}</span>
       </div>
     </>
   )

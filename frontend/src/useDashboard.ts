@@ -51,19 +51,19 @@ type Snapshot = {
   analytics: Analytics; events: EventPage; refreshedAt: string
 }
 
-export function useResource<T>(path: string | null, refresh = 0) {
+export function useResource<T>(path: string | null, refresh = 0, enabled = true) {
   const [snapshot, setSnapshot] = useState<{ path: string; refresh: number; data?: T; error: boolean }>()
   useEffect(() => {
-    if (!path) return
+    if (!path || !enabled) return
     const controller = new AbortController()
     request<T>(path, controller.signal).then(
       (data) => { if (!controller.signal.aborted) setSnapshot({ path, refresh, data, error: false }) },
       () => { if (!controller.signal.aborted) setSnapshot({ path, refresh, error: true }) },
     )
     return () => controller.abort()
-  }, [path, refresh])
+  }, [path, refresh, enabled])
   const active = snapshot && snapshot.path === path && snapshot.refresh === refresh ? snapshot : undefined
-  return { data: active?.data, error: active?.error ?? false, loading: Boolean(path && !active) }
+  return { data: active?.data, error: active?.error ?? false, loading: Boolean(path && !active), snapshot }
 }
 
 export function useDashboard(filters: Filters, bucket: Bucket, scope: string, enabled: boolean, refresh: number) {

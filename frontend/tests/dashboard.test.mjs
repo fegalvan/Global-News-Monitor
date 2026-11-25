@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { queryParams } from '../src/api.ts'
-import { activitySeries, customWindow, freshnessStatus, liveWindow, sourceLink } from '../src/format.ts'
+import { activitySeries, customWindow, freshnessStatus, liveWindow, readSelection, sourceLink } from '../src/format.ts'
 import { cellOrigin, mapPolygon } from '../src/mapGeometry.ts'
 
 test('shared query retains exclusive end, filters, and both cursor fields', () => {
@@ -27,10 +27,22 @@ test('a live end includes a processed export with an ahead-of-browser clock', ()
   assert.equal(window.end, '2026-11-23T23:45:00.001Z')
 })
 
+test('shared links restore valid filters and exact UTC bounds', () => {
+  const params = new URLSearchParams({ country: 'us', category: 'politics', days: '7',
+    start: '2026-11-23T00:00:00.001Z', end: '2026-11-24T00:00:00Z' })
+  assert.deepEqual(readSelection(params), {
+    country: 'US', category: 'politics', mode: 'custom',
+    custom: { start: '2026-11-23T00:00:00.001Z', end: '2026-11-24T00:00:00.000Z' },
+  })
+  params.set('start', '2026-12-01T00:00:00Z')
+  params.set('category', 'unknown')
+  assert.deepEqual(readSelection(params), { country: 'US', category: '', mode: '7', custom: null })
+})
+
 test('source staleness, ingestion staleness, and API outages have distinct labels', () => {
-  assert.equal(freshnessStatus('source_stale', false).label, 'Source data stale')
-  assert.equal(freshnessStatus('ingestion_stale', false).label, 'Ingestion stale')
-  assert.equal(freshnessStatus('healthy', true).label, 'API unavailable')
+  assert.equal(freshnessStatus('source_stale', false).label, 'Source updates delayed')
+  assert.equal(freshnessStatus('ingestion_stale', false).label, 'Dashboard updates delayed')
+  assert.equal(freshnessStatus('healthy', true).label, 'Update status unavailable')
 })
 
 test('time-series leaves partial edges and incomplete export coverage out of the trend', () => {
@@ -60,6 +72,9 @@ test('event links only allow HTTP and HTTPS URLs', () => {
   assert.equal(sourceLink('javascript:alert(1)'), null)
   assert.equal(sourceLink('/relative'), null)
   assert.equal(sourceLink('https://example.com@other.example/story'), null)
+  assert.equal(sourceLink('https://example.com\\foo'), null)
+  assert.equal(sourceLink('https://example.com/story', 'other.example'), null)
+  assert.equal(sourceLink('https://Example.COM:443/story', 'example.com'), 'https://example.com/story')
 })
 
 test('a polygon crossing the date line is drawn on both edges without a transglobal line', () => {

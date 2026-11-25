@@ -718,3 +718,77 @@ def test_health_monitor_counts_missing_and_reports_scheduler(dashboard_client, p
     assert response.json()["coverage"]["missing"] == 96
     assert len(response.json()["coverage"]["latest_gaps"]) == 8
     assert response.headers["server-timing"].startswith("app;dur=")
+
+
+def test_news_coverage_groups_exact_urls_and_checks_scope(dashboard_client, pg_connection, dashboard_window, monkeypatch):
+    start = datetime.fromisoformat(dashboard_window["start"])
+    end = datetime.fromisoformat(dashboard_window["end"])
+    run_id = uuid4()
+    insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+    source = "https://Example.com/story"
+    rows = [
+        (source, "044", "diplomacy", end - timedelta(minutes=10)),
+        (source, "190", "conflict", end - timedelta(minutes=20)),
+        (source + "?edition=2", "190", "conflict", end - timedelta(minutes=30)),
+        ("https://elsewhere.example/other", "190", "conflict", end - timedelta(minutes=40)),
+        ("https://example.com@elsewhere.example/unsafe", "190", "conflict", start),
+        ("https://example.com\\elsewhere.example/unsafe", "190", "conflict", start),
+        (source, "190", "conflict", end),
+    ]
+    common = _build_event(run_id, "unused")
+    insert_raw_and_normalized_batch(pg_connection, [
+        dict(common, dedupe_key=f"coverage-{index}", event_time_utc=stamp, event_code=code,
+             primary_category=category, raw_payload={"EventCode": code, "SOURCEURL": url})
+        for index, (url, code, category, stamp) in enumerate(rows)
+    ])
+    filters = {**dashboard_window, "country": "USA"}
+    response = dashboard_client.get("/coverage", params=filters)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert (body["inspected_records"], body["linked_records"], body["unique_urls"], body["truncated"]) == (10, 4, 3, False)
+    assert body["domains"][0] == {"domain": "example.com", "articles": 2, "records": 3}
+    first = body["articles"][0]
+    assert (first["url"], first["record_count"], first["category"], first["event_label"]) == (source, 2, "diplomacy", "Meet")
+
+    filtered = dashboard_client.get("/coverage", params={**filters, "domain": "EXAMPLE.COM", "category": "conflict"}).json()
+    assert filtered["unique_urls"] == 3
+    assert [article["url"] for article in filtered["articles"]] == [source, source + "?edition=2"]
+    assert dashboard_client.get("/coverage", params={**filters, "domain": "example.com/path"}).status_code == 422
+    assert dashboard_client.get("/coverage", params={**filters, "country": "GB"}).json()["articles"] == []
+
+    monkeypatch.setattr("src.ingestion.coverage_queries.RECORD_LIMIT", 2)
+    bounded = dashboard_client.get("/coverage", params=filters).json()
+    assert (bounded["inspected_records"], bounded["unique_urls"], bounded["truncated"]) == (2, 1, True)
+
+
+def test_history_category_changes_match_raw_counts_for_complete_adjacent_windows(dashboard_client, pg_connection):
+    end = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    split = end - timedelta(days=1)
+    previous = split - timedelta(days=1)
+    pg_connection.execute("""
+        INSERT INTO event_history_coverage (export_time_utc)
+        SELECT stamp FROM generate_series(%s::timestamptz, %s::timestamptz, interval '15 minutes') stamp
+    """, (previous, end - timedelta(minutes=15)))
+    run_id = uuid4()
+    insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+    common = _build_event(run_id, "unused")
+    insert_raw_and_normalized_batch(pg_connection, [
+        dict(common, dedupe_key=f"shifts-{index}", primary_category=category, event_time_utc=stamp)
+        for index, (category, stamp) in enumerate([
+            ("conflict", previous), ("conflict", split), ("diplomacy", split), ("politics", end),
+        ])
+    ])
+    body = dashboard_client.get("/history", params={"end": end.isoformat(), "country": "USA"}).json()
+    shifts = body["comparison_24h"]["category_changes"]
+    counts = pg_connection.execute("""
+        SELECT primary_category AS category, count(*) FILTER (WHERE event_time_utc >= %s) AS current,
+               count(*) FILTER (WHERE event_time_utc < %s) AS previous
+        FROM normalized_events WHERE event_time_utc >= %s AND event_time_utc < %s AND country_code = 'USA'
+        GROUP BY primary_category
+    """, (split, split, previous, end)).fetchall()
+    assert shifts == [dict(row, change=row["current"] - row["previous"])
+                      for row in sorted(counts, key=lambda row: -abs(row["current"] - row["previous"]))]
+    assert body["comparison_7d"]["category_changes"] == []
+    pg_connection.execute("DELETE FROM event_history_coverage WHERE export_time_utc = %s", (split,))
+    incomplete = dashboard_client.get("/history", params={"end": end.isoformat()}).json()
+    assert incomplete["comparison_24h"]["category_changes"] == []

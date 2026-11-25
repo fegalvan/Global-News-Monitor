@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import AwareDatetime, BeforeValidator
 
 from src.db import get_connection, read_snapshot
+from src.ingestion.coverage_queries import fetch_source_coverage
 from src.ingestion.dashboard_queries import (
     EventFilters,
     fetch_analytics,
@@ -171,6 +172,19 @@ def history(params: DashboardFilters):
     filters = params.window()
     with get_connection() as connection, read_snapshot(connection):
         return fetch_history(connection, filters.end, filters.country, filters.category)
+
+
+@router.get("/coverage")
+def coverage(
+    params: DashboardFilters,
+    domain: Annotated[str | None, Query(max_length=253, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z][a-zA-Z0-9-]*$")] = None,
+):
+    filters = params.window()
+    with get_connection() as connection:
+        result = fetch_source_coverage(connection, filters, domain.lower() if domain else None)
+    for article in result["articles"]:
+        article["event_label"] = get_event_label(article.pop("event_code") or "")
+    return {"filters": filters, **result}
 
 
 def grid_resolution(south: float, west: float, north: float, east: float) -> float:

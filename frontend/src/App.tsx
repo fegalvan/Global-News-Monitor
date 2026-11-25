@@ -1,26 +1,29 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Activity, ChartNoAxesColumn, CircleAlert, Globe2, List, MapPin, Radio, RefreshCw } from 'lucide-react'
+import { Activity, ChartNoAxesColumn, CircleAlert, Globe2, List, MapPin, Newspaper, Radio, RefreshCw } from 'lucide-react'
 import type { Bucket, Window } from './api'
-import { capitalize, categories, count, customWindow, freshnessStatus, liveWindow, utc } from './format'
+import { capitalize, categories, count, customWindow, freshnessStatus, liveWindow, readSelection, utc } from './format'
 import { CategoryChart, CountryChart, EventFeed, PanelHeading } from './Panels'
 import { CountryOverview, HistoricalAnalysis } from './Intelligence'
+import { Coverage } from './Coverage'
 import { useDashboard, useFreshness } from './useDashboard'
 
 const ActivityMap = lazy(() => import('./ActivityMap'))
 const VolumeChart = lazy(() => import('./VolumeChart'))
 const screens = [
   { id: 'overview', label: 'Overview', icon: Globe2 },
-  { id: 'events', label: 'Events', icon: List },
   { id: 'indicators', label: 'Trends', icon: Activity },
+  { id: 'coverage', label: 'News coverage', icon: Newspaper },
+  { id: 'events', label: 'Event records', icon: List },
 ]
 
 export default function App() {
   const [navigation, setNavigation] = useState(() => location.hash.slice(1) || 'overview')
-  const [country, setCountry] = useState('')
-  const [category, setCategory] = useState('')
-  const [mode, setMode] = useState<'1' | '7' | 'custom'>('1')
-  const [custom, setCustom] = useState<Window | null>(null)
+  const [initial] = useState(() => readSelection(new URLSearchParams(location.search)))
+  const [country, setCountry] = useState(initial.country)
+  const [category, setCategory] = useState(initial.category)
+  const [mode, setMode] = useState(initial.mode)
+  const [custom, setCustom] = useState<Window | null>(initial.custom)
   const [customOpen, setCustomOpen] = useState(false)
   const [rangeError, setRangeError] = useState(false)
   const [refresh, setRefresh] = useState(0)
@@ -59,6 +62,17 @@ export default function App() {
     return () => globalThis.removeEventListener('hashchange', updateNavigation)
   }, [])
 
+  useEffect(() => {
+    const url = new URL(location.href)
+    const params = { country, category, days: mode === '7' ? '7' : '',
+      start: mode === 'custom' ? custom?.start : '', end: mode === 'custom' ? custom?.end : '' }
+    for (const [key, value] of Object.entries(params)) {
+      if (value) url.searchParams.set(key, value)
+      else url.searchParams.delete(key)
+    }
+    if (url.href !== location.href) history.replaceState(history.state, '', url)
+  }, [country, category, mode, custom])
+
   function changeMode(value: string) {
     setRangeError(false)
     if (value === 'custom') {
@@ -77,7 +91,18 @@ export default function App() {
     if (parsed) {
       setCustom(parsed)
       setMode('custom')
+      setCustomOpen(false)
     }
+  }
+
+  function exploreCoverage({ start, end }: Window, nextCategory?: string) {
+    setCustom({ start: new Date(start).toISOString(), end: new Date(end).toISOString() })
+    setMode('custom')
+    setCustomOpen(false)
+    setRangeError(false)
+    if (nextCategory) setCategory(nextCategory)
+    location.hash = 'coverage'
+    document.getElementById('coverage')?.focus()
   }
 
   function refreshNow() {
@@ -87,15 +112,15 @@ export default function App() {
   const status = freshnessStatus(freshness.data?.status, freshness.error)
   const topCategory = analytics?.category_counts[0]
   const metrics = [
-    { label: 'Total events', value: analytics && count(analytics.summary.total_events), icon: Activity,
-      detail: 'In the selected window' },
-    { label: 'Countries represented', value: analytics && count(analytics.summary.countries_with_events), icon: Globe2,
-      detail: 'Distinct GDELT country codes' },
-    { label: 'Geolocated events', value: analytics && count(analytics.summary.geolocated_events), icon: MapPin,
+    { label: 'Reported events', value: analytics && count(analytics.summary.total_events), icon: Activity,
+      detail: 'GDELT records in this selection' },
+    { label: 'Countries with reports', value: analytics && count(analytics.summary.countries_with_events), icon: Globe2,
+      detail: 'Distinct event locations by country' },
+    { label: 'Events on the map', value: analytics && count(analytics.summary.geolocated_events), icon: MapPin,
       detail: analytics?.summary.total_events
         ? `${(100 * analytics.summary.geolocated_events / analytics.summary.total_events).toFixed(1)}% of selected events`
         : 'Events with valid coordinates' },
-    { label: 'Most active category', value: topCategory && capitalize(topCategory.primary_category), icon: ChartNoAxesColumn,
+    { label: 'Most reported category', value: topCategory && capitalize(topCategory.primary_category), icon: ChartNoAxesColumn,
       detail: topCategory ? `${count(topCategory.count)} events` : 'By event count' },
   ]
 
@@ -120,11 +145,12 @@ export default function App() {
         </div>
       </aside>
 
-      <main id="main" className="workspace">
+      <main id="main" className="workspace" tabIndex={-1}>
         <header className="overview-header" id="overview">
           <div className="intro">
-            <h1>Global activity</h1>
-            <p>Explore global events coded from news coverage by the GDELT Project.</p>
+            <h1>Global reporting activity</h1>
+            <p>See where events are reported, how coverage changes, and which articles are linked to the records.</p>
+            <p className="intro-note">GDELT identifies events in news reports using automated coding. Counts reflect available coverage and can include repeated reporting.</p>
           </div>
           <div className="feed-status">
             <div className="feed-status-heading">
@@ -133,8 +159,8 @@ export default function App() {
                 disabled={board.loading} onClick={refreshNow}><RefreshCw size={16} /></button>
             </div>
             <dl>
-              <div><dt>GDELT batch slot</dt><dd>{utc(freshness.data?.latest_export_time_utc ?? null)}</dd></div>
-              <div><dt>Batch ingested</dt><dd>{utc(freshness.data?.latest_export_completed_at_utc ?? null)}</dd></div>
+              <div><dt>Latest source batch</dt><dd>{utc(freshness.data?.latest_export_time_utc ?? null)}</dd></div>
+              <div><dt>Added to dashboard</dt><dd>{utc(freshness.data?.latest_export_completed_at_utc ?? null)}</dd></div>
             </dl>
             <small className="feed-clock-note">GDELT labels batches by scheduled slot. A file can arrive before its slot time.</small>
           </div>
@@ -165,6 +191,8 @@ export default function App() {
             </button>
           </div>
           {country && <a className="country-profile-link" href="#country-profile">View {countryName} profile</a>}
+          {mode === 'custom' && !customOpen && <button type="button" className="text-button country-profile-link"
+            onClick={() => setCustomOpen(true)}>Edit dates</button>}
           {customOpen && (
             <form className="custom-range" onSubmit={applyCustom}>
               <label>Start (UTC)<input type="datetime-local" name="start" defaultValue={window.start.slice(0, 16)} required /></label>
@@ -185,7 +213,7 @@ export default function App() {
           <div className="api-error" role="alert">
             <CircleAlert size={18} />
             <span>{board.data ? 'Refresh failed. Showing the last successful result for this selection.'
-              : 'Dashboard data is unavailable. Check that FastAPI is running and try again.'}</span>
+              : 'Dashboard data is temporarily unavailable.'}</span>
             <button type="button" className="outline-button" onClick={refreshNow}>Try again</button>
           </div>
         )}
@@ -205,14 +233,14 @@ export default function App() {
 
         <div className="overview-grid">
           <section className="panel map-panel">
-            <PanelHeading title="Activity map" subtitle="Zoom for smaller cells · Select a country to open its profile" />
+            <PanelHeading title="Where events are reported" subtitle="Brighter cells show more records. Zoom for detail or select a country to explore." />
             <Suspense fallback={<div className="map-frame map-fallback">Loading world map…</div>}>
               <ActivityMap filters={board.data?.filters ?? null} countries={board.countries} activeCountry={country}
                 onCountry={openCountry} pending={board.loading} geolocated={analytics?.summary.geolocated_events} refresh={refresh} />
             </Suspense>
           </section>
           <div className="overview-side">
-            <Suspense fallback={<section className="panel volume-panel"><PanelHeading title="Activity over time" />
+            <Suspense fallback={<section className="panel volume-panel"><PanelHeading title="Reporting over time" />
               <p className="panel-empty">Loading activity chart…</p></section>}>
               <VolumeChart analytics={analytics} window={displayedWindow} bucket={board.data?.bucket ?? bucket} loading={board.loading} />
             </Suspense>
@@ -223,12 +251,13 @@ export default function App() {
         <div className="analysis-grid">
           <CategoryChart analytics={analytics} category={category} onCategory={toggleCategory} loading={board.loading} />
           <HistoricalAnalysis filters={board.data?.filters ?? null} refresh={refresh}
-            unavailable={board.error && !board.data} />
+            unavailable={board.error && !board.data} exploreCoverage={exploreCoverage} />
         </div>
+        <Coverage filters={board.data?.filters ?? null} scope={scope} refresh={refresh} unavailable={board.error && !board.data} />
         <EventFeed page={board.data?.events} loading={board.loading} loadingPage={board.loadingPage}
           pageError={board.pageError} loadMore={board.loadMore} />
         <footer className="workspace-footer">
-          <span>GDELT reflects media reporting and coding. Counts are an incomplete and uneven view of real-world activity.</span>
+          <span>Source coverage varies by place and time. Treat changes as reporting signals.</span>
           <span>Latest reported event date {freshness.data?.latest_event_occurrence_date ?? '—'}</span>
         </footer>
       </main>

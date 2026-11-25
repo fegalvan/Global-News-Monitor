@@ -15,9 +15,9 @@ export default function VolumeChart({ analytics, window, bucket, loading }: {
   const expected = coverage.reduce((total, row) => total + row.expected_exports, 0)
   return (
     <section className="panel volume-panel">
-      <PanelHeading title="Activity over time" subtitle={`Reported events per complete ${bucket} · UTC`} />
+      <PanelHeading title="Reporting over time" subtitle={`Event records per complete ${bucket} · UTC`} />
       {rows.some((row) => row.count !== null) ? (
-        <div className="volume-chart" aria-label="Chart of events by UTC time bucket">
+        <div className="volume-chart" role="region" aria-label={`Chart of event records per ${bucket}`}>
           <ResponsiveContainer width="100%" height="100%" minWidth={0}>
             <AreaChart data={rows} margin={{ left: 0, right: 14, top: 8, bottom: 0 }}>
               <CartesianGrid vertical={false} stroke="#283240" strokeDasharray="3 4" />
@@ -26,7 +26,7 @@ export default function VolumeChart({ analytics, window, bucket, loading }: {
               <YAxis width={44} allowDecimals={false} tickCount={4} tickFormatter={count}
                 axisLine={false} tickLine={false} tick={{ fill: '#9eabba', fontSize: 11 }} />
               <Tooltip labelFormatter={(time) => utc(new Date(Number(time)).toISOString())}
-                formatter={(value) => [count(Number(value)), 'Events']}
+                formatter={(value) => [count(Number(value)), 'Event records']}
                 contentStyle={{ background: '#141f2b', color: '#eef3f9', border: '1px solid #405061', borderRadius: 4 }}
                 itemStyle={{ color: '#7bd2c6' }} />
               <Area type="linear" dataKey="count" stroke="#73d3c3" strokeWidth={2}
@@ -35,9 +35,9 @@ export default function VolumeChart({ analytics, window, bucket, loading }: {
             </AreaChart>
           </ResponsiveContainer>
         </div>
-      ) : <p className="panel-empty">{loading ? 'Loading activity…' : analytics ? 'No fully covered time buckets in this window.' : 'Activity unavailable.'}</p>}
-      {expected > 0 && <p className="coverage-note">{count(completed)} of {count(expected)} expected exports processed
-        {rows.some((row) => row.count === null) && ' · Gaps include partial buckets and missing exports'}</p>}
+      ) : <p className="panel-empty">{loading ? 'Loading reporting activity…' : analytics ? `No complete ${bucket === 'hour' ? 'hours' : 'days'} in this selection.` : 'Reporting activity unavailable.'}</p>}
+      {expected > 0 && <p className="coverage-note">{count(completed)} of {count(expected)} expected source updates processed
+        {rows.some((row) => row.count === null) && ` · Gaps show missing updates or partial ${bucket === 'hour' ? 'hours' : 'days'}`}</p>}
     </section>
   )
 }

@@ -10,6 +10,7 @@ def test_comparisons_distinguish_zero_and_missing():
     assert zero_baseline["absolute_change"] == 10
     assert zero_baseline["percent_change"] is None
     assert compare_periods(period(10), period(0, 0))["absolute_change"] is None
+    assert compare_periods(period(100), period(19))["percent_change"] is None
     assert compare_periods(period(0), period(20))["percent_change"] == -100
     assert compare_periods(period(120), period(80))["percent_change"] == 50
 

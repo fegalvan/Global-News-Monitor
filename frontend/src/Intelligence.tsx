@@ -1,6 +1,6 @@
-import type { Analytics, Comparison, CountryProfile, Filters, History } from './api'
+import type { Analytics, Comparison, CountryProfile, Filters, History, Window } from './api'
 import { queryParams } from './api'
-import { count, utc } from './format'
+import { capitalize, count, utc } from './format'
 import { PanelHeading } from './Panels'
 import { useResource } from './useDashboard'
 import { lazy, Suspense } from 'react'
@@ -8,72 +8,90 @@ import { lazy, Suspense } from 'react'
 const HistoryChart = lazy(() => import('./HistoryChart'))
 
 const anomalyLabels: Record<History['anomaly']['status'], string> = {
-  incomplete_observation: 'Current 24-hour coverage is incomplete',
-  insufficient_history: 'Insufficient comparable history',
-  low_baseline_volume: 'Typical activity is too low to score reliably',
-  elevated: 'Elevated reporting activity',
-  within_threshold: 'Activity within the reporting threshold',
+  incomplete_observation: 'Some source updates are missing from this 24-hour period',
+  insufficient_history: 'More comparable weeks are needed',
+  low_baseline_volume: 'Too few typical records to flag an increase reliably',
+  elevated: 'Unusually high reporting activity',
+  within_threshold: 'No unusual increase flagged',
 }
 
 function signed(value: number, digits = 0) {
   return new Intl.NumberFormat(undefined, { signDisplay: 'exceptZero', maximumFractionDigits: digits }).format(value)
 }
 
-function Change({ title, comparison }: { title: string; comparison: Comparison }) {
+type ExploreCoverage = (period: Window, category?: string) => void
+
+function Change({ title, comparison, exploreCoverage }: {
+  title: string; comparison: Comparison; exploreCoverage: ExploreCoverage
+}) {
   const { current, previous, absolute_change, percent_change } = comparison
   const observed = ({ completed, expected, observed }: Comparison['current']) =>
-    completed === 0 && observed === 0 ? 'no observations'
-      : `${count(observed)}${completed === expected ? '' : ' observed'}`
+    completed === 0 && observed === 0 ? 'no data' : `${count(observed)}${completed === expected ? '' : ' available'}`
+  const shifts = comparison.category_changes?.filter((row) => row.change !== 0) ?? []
   return (
     <div className="history-change">
       <h3>{title}</h3>
       {absolute_change === null
         ? <strong>Incomplete coverage</strong>
-        : <strong>{signed(absolute_change)} events{percent_change === null ? '' : ` · ${signed(percent_change, 1)}%`}</strong>}
+        : <strong>{signed(absolute_change)} records{percent_change === null ? '' : ` · ${signed(percent_change, 1)}%`}</strong>}
       <p>Current {observed(current)} · Previous {observed(previous)}</p>
-      <small>Exports {current.completed}/{current.expected} current · {previous.completed}/{previous.expected} previous</small>
-      {absolute_change !== null && percent_change === null && <small>Percentage unavailable because the previous count was zero.</small>}
+      {absolute_change === null && <small>Source updates {current.completed}/{current.expected} current · {previous.completed}/{previous.expected} previous</small>}
+      {absolute_change !== null && percent_change === null && <small>Percent change needs at least 20 previous records.</small>}
+      {shifts.length > 0 && <details>
+        <summary>Changes by category</summary>
+        <ul className="trend-shifts">{shifts.map((row) => <li key={row.category}>
+          <span>{capitalize(row.category)} · {count(row.previous)} → {count(row.current)}</span>
+          <button type="button" className="text-button" onClick={() => exploreCoverage(row.change > 0 ? current : previous, row.category)}
+            aria-label={`See ${capitalize(row.category)} coverage in the ${row.change > 0 ? 'current' : 'previous'} period`}>{signed(row.change)}</button>
+        </li>)}</ul>
+        <small>Select a change to see links from the period with more records.</small>
+      </details>}
+      <div className="trend-links">
+        {current.observed > 0 && <button type="button" className="text-button" onClick={() => exploreCoverage(current)}>Current coverage</button>}
+        {previous.observed > 0 && <button type="button" className="text-button" onClick={() => exploreCoverage(previous)}>Previous coverage</button>}
+      </div>
     </div>
   )
 }
 
-export function HistoricalAnalysis({ filters, refresh, unavailable }: {
-  filters: Filters | null; refresh: number; unavailable: boolean
+export function HistoricalAnalysis({ filters, refresh, unavailable, exploreCoverage }: {
+  filters: Filters | null; refresh: number; unavailable: boolean; exploreCoverage: ExploreCoverage
 }) {
   const query = useResource<History>(filters ? `/history?${queryParams(filters)}` : null, refresh)
   const data = query.data
   return (
-    <section className="panel history-panel" id="indicators">
-      <PanelHeading title="Reporting trends" subtitle="Equivalent time periods and unusual activity in the selected country and category" />
+    <section className="panel history-panel" id="indicators" tabIndex={-1}>
+      <PanelHeading title="Reporting trends" subtitle="See how record counts changed from the preceding period of the same length." />
       {data ? (
         <div className="history-content">
           <p className="history-time">Comparisons end at {utc(data.comparison_24h.current.end)}.</p>
           <div className="history-comparisons">
-            <Change title="24 hours" comparison={data.comparison_24h} />
-            <Change title="Seven days" comparison={data.comparison_7d} />
+            <Change title="24 hours vs. prior 24 hours" comparison={data.comparison_24h} exploreCoverage={exploreCoverage} />
+            <Change title="7 days vs. prior 7 days" comparison={data.comparison_7d} exploreCoverage={exploreCoverage} />
           </div>
           <div className="anomaly-card">
-            <h3>Unusual reporting</h3>
+            <h3>Unusual increases</h3>
             <strong className={data.anomaly.status === 'elevated' ? 'elevated-activity' : undefined}>
               {anomalyLabels[data.anomaly.status]}
             </strong>
-            <p>{data.anomaly.baseline_samples} comparable periods · {data.anomaly.minimum_samples} required
-              {' · '}Observed {data.anomaly.observed === null ? '—' : count(data.anomaly.observed)}
-              {' · '}Expected {data.anomaly.expected === null ? '—' : count(data.anomaly.expected)}
-              {data.anomaly.score === null ? '' : ` · Score ${data.anomaly.score.toFixed(2)}`}
-              {data.anomaly.robust_scale === null ? '' : ` · Baseline scale ${data.anomaly.robust_scale.toFixed(1)}`}
+            <p>{data.anomaly.baseline_samples} complete weekly comparisons · {data.anomaly.minimum_samples} needed
+              {data.anomaly.expected === null ? '' : ` · Typical count ${count(data.anomaly.expected)}`}
+              {data.anomaly.observed === null ? '' : ` · Current count ${count(data.anomaly.observed)}`}
             </p>
+            {data.anomaly.status === 'elevated' && <button type="button" className="outline-button"
+              onClick={() => exploreCoverage(data.comparison_24h.current)}>Explore links from this increase</button>}
             <details>
               <summary>How this indicator works</summary>
               <p>The baseline uses up to 12 complete 24-hour periods, ending on the same UTC weekday and hour.
                 A flag requires a score of at least 3.5, at least 20 more records, and at least 50% more activity
                 than the baseline median of 20 or more. Scores are descriptive. Source gaps, uneven reporting,
                 and correlated stories can affect them.</p>
+              {data.anomaly.score !== null && <p>Score {data.anomaly.score.toFixed(2)} · Baseline scale {data.anomaly.robust_scale?.toFixed(1)}</p>}
             </details>
           </div>
           {data.daily.some((day) => day.count !== null)
             ? <Suspense fallback={<p className="panel-empty">Loading historical chart…</p>}><HistoryChart daily={data.daily} /></Suspense>
-            : <p className="panel-empty">Daily trend appears after the first complete UTC day of exports.</p>}
+            : <p className="panel-empty">The daily chart needs at least one complete UTC day of source updates.</p>}
         </div>
       ) : <p className="panel-empty" role={query.error || unavailable ? 'alert' : 'status'}>{query.error || unavailable
         ? 'Reporting history is unavailable. Refresh to retry.' : 'Loading reporting history…'}</p>}
@@ -88,28 +106,23 @@ export function CountryOverview({ filters, analytics, name, refresh, unavailable
   const coverage = analytics?.coverage.reduce((sum, row) =>
     ({ expected: sum.expected + row.expected_exports, completed: sum.completed + row.completed_exports }),
   { expected: 0, completed: 0 })
-  const categoryCount = (category: string) => analytics?.category_counts.find((row) => row.primary_category === category)?.count ?? 0
   return (
     <section className="panel country-profile" id="country-profile" tabIndex={-1}>
-      <PanelHeading title={name} subtitle="Country profile · GDELT event geography">
-        <a href="#events" className="outline-button">Recent events</a>
+      <PanelHeading title={name} subtitle="Country profile based on the reported location of each event">
+        <a href="#coverage" className="outline-button">Explore news coverage</a>
       </PanelHeading>
       <div className="profile-content">
         {analytics && <>
           <div className="profile-summary">
             <span><strong>{count(analytics.summary.total_events)}</strong> reported events</span>
-            {(!filters?.category || filters.category === 'politics')
-              && <span><strong>{count(categoryCount('politics'))}</strong> politics</span>}
-            {(!filters?.category || filters.category === 'conflict')
-              && <span><strong>{count(categoryCount('conflict'))}</strong> conflict</span>}
           </div>
           <p className="profile-coverage">{count(analytics.summary.geolocated_events)} records with coordinates
-            {' · '}{coverage?.completed ?? 0}/{coverage?.expected ?? 0} source exports in the selected window.
-            {' '}Map precision ranges from country centroids to localities.</p>
+            {' · '}{coverage?.completed ?? 0}/{coverage?.expected ?? 0} expected source updates processed.
+            {' '}A map point can represent a country, region, or locality.</p>
         </>}
         {query.data ? (
           <div className="profile-lists">
-            {([['Prominent locations', query.data.locations], ['Source domains', query.data.sources]] as const)
+            {([['Most reported locations', query.data.locations], ['Sources by record count', query.data.sources]] as const)
               .map(([label, rows]) => <div key={label}>
                 <h3>{label}</h3>
                 {rows.length ? <ol>{rows.map((row) => <li key={row.label}>
