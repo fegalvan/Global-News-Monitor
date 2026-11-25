@@ -69,6 +69,11 @@ Retrying an interrupted export skips rows that were already committed. The
 deterministic hash is an identity fallback and cannot tell whether differently
 coded reports describe the same real-world event.
 
+If the collector stops after committing its first batch, the raw and normalized
+rows from that batch are already saved. The checkpoint for the file stays
+unfinished. On retry, the unique index skips the saved rows. Completing the
+checkpoint tells the dashboard the whole export has been processed.
+
 ## Classification
 
 [`categorize_event`](../src/domain/events/categorization.py) applies cyber
@@ -304,9 +309,14 @@ A single aggregation of grouped counts supplies the summary, country totals,
 category totals, and UTC time series. Complete hours use
 `event_hourly_counts`. At most two partial hours read raw detail through the
 existing event-time or country-time indexes. A filter contained in a single
-hour reads detail once. The analytics and coverage queries share a read-only
-repeatable-read snapshot. The country selector uses a small reference response,
+hour reads detail once. The analytics and history endpoints each use a read-only
+repeatable-read transaction to keep their own queries consistent. Coverage runs
+as a separate query over retained event detail. The country selector uses a small reference response,
 independent of map and analytics queries.
+
+For a full day of country totals, the database can add stored counts for
+24 hours because ingestion already grouped the individual records. The
+event table and original links still go back to the retained detail.
 
 Statement-level normalized-row triggers apply grouped deltas in the same
 transaction as each batch. Inserts update both live and historical totals.
@@ -320,7 +330,7 @@ Historical counts are kept for 90 days, and the normal 17-day raw retention is
 unchanged. A deliberately configured raw window longer than 90 days may keep
 the corresponding live aggregate row until raw removal. Old checkpoint
 metadata stays available to prevent reprocessing an expired export. The map
-uses the raw latitude and longitude pair and chooses a grid small enough for
+uses the retained latitude and longitude pair and chooses a grid small enough for
 the requested extent while keeping the maximum cell count bounded. With
 `west > east` the viewport crosses the antimeridian. Countries can be chosen
 directly from available map boundaries or from the FIPS catalogue. The
@@ -329,7 +339,9 @@ latitude and longitude where both coordinates exist. The world grid has
 90 × 180 possible two-degree cells. Smaller extents use finer grids at
 one, one half, or one quarter degree within a bounded response size.
 Each occupied cell contributes to the viewport total. The compatibility response from
-`/analytics` still offers its original two-degree grid when requested.
+`/analytics` still offers its original two-degree grid when requested. PostGIS supplies the
+stored geography points and spatial index. The grid queries use numeric bounds
+and group coordinates with ordinary latitude and longitude arithmetic.
 
 ### Compare equal periods and gate the score on coverage
 
@@ -345,6 +357,10 @@ v1.2 it requires at least 20 records in the previous period. The absolute change
 still appears for fully observed periods below that threshold. Each plotted daily value needs 96 complete exports
 and a trailing mean requires seven consecutive complete UTC days.
 
+For example, an increase from two to four records across two complete days
+shows a change of +2 without a percentage. If either day is missing an export,
+the observed counts remain visible and the +2 is withheld as well.
+
 For the latest complete 24-hour window, sample the previous 12 weekly
 windows ending at the same UTC weekday and hour. Require eight fully covered
 periods and a median of at least 20. Weekly matches control for day-of-week
@@ -355,6 +371,13 @@ the median. The factor is the inverse of the standard normal's 75th
 percentile, which makes scaled MAD consistent for standard deviation under
 a normal model. The count-scale
 floor prevents a zero or tiny MAD from yielding an unstable score.
+
+As an illustration, take five historical counts of 38, 39, 40, 41, and 42.
+The median is 40 and the median distance from it is 1. Replacing 42 with 142
+leaves both values unchanged, while the mean rises from 40 to 60 and the
+standard deviation grows. This example illustrates the calculation. The
+dashboard requires at least eight comparable windows to score a change.
+
 The score is the observed excess divided by that scale. A flag requires a
 score of at least 3.5, an excess of at least 20 reports, and a relative
 increase of at least 50%. The thresholds are transparent screening rules.

@@ -16,17 +16,17 @@ The GDELT Project identifies events in news coverage using automated coding. Its
 
 ## How it works
 
-The Python pipeline processes the latest GDELT files every 15 minutes. PostgreSQL keeps the original source fields, the cleaned records the dashboard uses, and hourly summaries for longer comparisons. FastAPI runs the filtered queries that feed the React dashboard. Caddy serves the site and its API on the same HTTPS address.
+On the Azure Linux VM, the scheduler runs the Python collector to process GDELT’s 15-minute exports. The collector writes to PostgreSQL with PostGIS on a separate managed Azure server. FastAPI queries that database when the dashboard requests data. Caddy serves the frontend files and forwards API requests over the same HTTPS address. React runs in the visitor’s browser.
 
 ```mermaid
 flowchart LR
     G["GDELT event exports"] --> P["Python collector"]
-    P --> D["Managed PostgreSQL + PostGIS"]
-    D --> A["FastAPI"]
+    P -->|Writes records| D["Separate Azure PostgreSQL + PostGIS server"]
+    A -->|Queries| D
     A --> W["Caddy"]
     W --> R["React in the browser"]
     subgraph VM["Azure VM · Docker Compose"]
-      P
+      S["Scheduler"] --> P
       A
       W
     end
