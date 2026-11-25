@@ -5,11 +5,10 @@ See the [Azure runbook](#azure-production-deployment) for the deployed services,
 rollout commands, and security checks. Hosting estimates are in USD and were
 checked November 23, 2026. Taxes, domain renewals, and usage overages may add cost.
 
-The v1.2 candidate is available for local review. The release-quality changes
-include revision `0012_category_quality`, which recategorizes retained records
-and grants the existing API role read access to the two new read tables.
-See the [quality follow-up](V1.2_QUALITY_VALIDATION.md) for rehearsal, recovery,
-source context backfill, and archive limits. Production deployment remains on v1.1.
+Production runs v1.2 with revision `0012_category_quality`. Use the
+[v1.2 procedure](#v12-migration-and-rollback) for future recovery and the
+[production report](V1.2_PRODUCTION_VALIDATION.md) for the measured cutover,
+backfill, and deployed images.
 
 ## Hosting options evaluated
 
@@ -483,7 +482,8 @@ The cutoff depends on the database at migration time. [Local rehearsal and archi
 1. Record the running source revision, image IDs, Compose inputs, scheduler
    status, and fixed-window baseline. Preserve the current images and
    configuration. Verify the candidate image IDs and review the scan of those
-   exact images.
+   exact images. Check that the API starts as the image's non-root runtime
+   user and serves `/health` before switching production.
 2. Take a protected logical backup with a PostgreSQL client compatible with
    the server and hostname-verified TLS. Restore it to an isolated
    PostgreSQL/PostGIS database. Rehearse the upgrade, a failed transaction,
