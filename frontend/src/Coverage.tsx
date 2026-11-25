@@ -5,8 +5,8 @@ import { capitalize, count, sourceLink, utc } from './format'
 import { PanelHeading } from './Panels'
 import { useResource } from './useDashboard'
 
-export function Coverage({ filters, scope, refresh, unavailable, requested }: {
-  filters: Filters | null; scope: string; refresh: number; unavailable: boolean; requested: boolean
+export function Coverage({ filters, placeName, scope, refresh, unavailable, requested }: {
+  filters: Filters | null; placeName: string; scope: string; refresh: number; unavailable: boolean; requested: boolean
 }) {
   const section = useRef<HTMLElement>(null)
   const [visible, setVisible] = useState(false)
@@ -36,7 +36,8 @@ export function Coverage({ filters, scope, refresh, unavailable, requested }: {
 
   return (
     <section ref={section} className="panel coverage-panel" id="coverage" tabIndex={-1}>
-      <PanelHeading title="News coverage" subtitle="Follow the original links GDELT associated with event records in this selection.">
+      <PanelHeading title="News coverage"
+        subtitle={`${placeName} · ${filters?.category ? capitalize(filters.category) : 'All categories'} · Original source links`}>
         <a href="#events" className="outline-button">View event records</a>
       </PanelHeading>
       {summary ? (

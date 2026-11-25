@@ -799,7 +799,7 @@ def test_history_category_changes_match_raw_counts_for_complete_adjacent_windows
 def test_legacy_momentum_uses_hourly_rates_on_both_sides(pg_connection):
     from src.main import MOMENTUM_SQL
 
-    now = pg_connection.execute("SELECT now() AS stamp").fetchone()["stamp"]
+    now = pg_connection.execute("SELECT now() AS stamp").fetchone()["stamp"].astimezone(timezone.utc)
     run_id = uuid4()
     insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
     common = _build_event(run_id, "unused")

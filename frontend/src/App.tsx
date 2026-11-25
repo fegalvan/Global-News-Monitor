@@ -257,7 +257,7 @@ export default function App() {
           <HistoricalAnalysis filters={board.data?.filters ?? null} refresh={refresh}
             unavailable={board.error && !board.data} exploreCoverage={exploreCoverage} />
         </div>
-        <Coverage filters={board.data?.filters ?? null} scope={scope} refresh={refresh}
+        <Coverage filters={board.data?.filters ?? null} placeName={countryName || 'Worldwide'} scope={scope} refresh={refresh}
           requested={navigation === 'coverage'} unavailable={board.error && !board.data} />
         <EventFeed page={board.data?.events} loading={board.loading} loadingPage={board.loadingPage}
           pageError={board.pageError} loadMore={board.loadMore} />

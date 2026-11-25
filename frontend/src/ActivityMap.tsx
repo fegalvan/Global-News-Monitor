@@ -120,7 +120,7 @@ export default function ActivityMap({ filters, countries, activeCountry, onCount
     const layer = geography.current
     if (!layer) return
     layer.eachLayer((item) => {
-      const shape = item as L.GeoJSON & { feature: (typeof boundaries.features)[number] }
+      const shape = item as L.Polygon & { feature: (typeof boundaries.features)[number] }
       const name = shape.feature.properties.name
       const records = countries.filter((row) => row.country_name === (aliases[name] || name) && row.country_code)
       const selected = records.find((row) => row.country_code === activeCountry)
@@ -132,6 +132,7 @@ export default function ActivityMap({ filters, countries, activeCountry, onCount
       })
       shape.unbindTooltip()
       shape.off('click mouseover mouseout')
+      shape.getElement()?.setAttribute('aria-label', target?.country_name ?? name)
       shape.bindTooltip(tooltip(target ? `${target.country_name} (${target.country_code}) · Click for profile` : name))
       if (target?.country_code) {
         const code = target.country_code

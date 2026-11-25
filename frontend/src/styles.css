@@ -183,7 +183,7 @@ a:hover { text-decoration: underline; }
 .rank-track { display: block; background: #253849; border-radius: 2px; height: .35rem; }
 .rank-track i { display: block; height: 100%; background: #6faead; border-radius: 2px; }
 
-.analysis-grid { margin: .9rem 0; display: grid; grid-template-columns: minmax(13rem, .8fr) minmax(0, 2.25fr); gap: .9rem; }
+.analysis-grid { margin: .9rem 0; display: grid; grid-template-columns: minmax(13rem, .8fr) minmax(0, 2.25fr); align-items: start; gap: .9rem; }
 .category-strip { margin: .15rem .9rem .5rem; display: flex; height: .48rem; gap: 2px; border-radius: 2px; overflow: hidden; }
 .category-strip span { flex-basis: 0; }
 .category-chart { list-style: none; padding: 0 .66rem .6rem; }
