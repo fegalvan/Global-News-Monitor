@@ -5,6 +5,9 @@ See the [Azure runbook](#azure-production-deployment) for the deployed services,
 rollout commands, and security checks. Hosting estimates are in USD and were
 checked November 23, 2026. Taxes, domain renewals, and usage overages may add cost.
 
+The v1.2 candidate is available for local review. Its new queries use the
+existing schema and runtime grants. [Local validation](V1.2_VALIDATION.md)
+
 ## Hosting options evaluated
 
 | Option | Estimated recurring cost | Tradeoff |

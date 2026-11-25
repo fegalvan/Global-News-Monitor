@@ -144,16 +144,25 @@ field names `avg_tone` and `worst_tone` refer to Goldstein scale here.
 Goldstein scores describe CAMEO action types. They differ from the GDELT
 average media tone field stored on the raw record.
 
+The `momentum` CLI command is a diagnostic for observed rates. It divides
+the last three hours of records by three and the last 24 hours by 24. The
+v1.2 correction fixes the earlier denominator of eight. The windows overlap
+and the CLI includes partial observations, so trends on the dashboard use
+the coverage-gated matched periods below.
+
 ## Frontend
 
 [`App.tsx`](../frontend/src/App.tsx) owns the country, category, and time
 controls. It resolves one UTC window for every panel. The server enforces
-a 30-day maximum. [`useDashboard.ts`](../frontend/src/useDashboard.ts) requests
+a 30-day maximum. Country, category, and time filters are reflected in the
+address bar so a reload or shared link restores the same selection.
+[`useDashboard.ts`](../frontend/src/useDashboard.ts) requests
 analytics and the first page together, aborts obsolete
 requests, and resets the event cursor when selections change. On a failed
 refresh it retains the last successful result for the same selection and
-shows an error message. History, map, and profile details have independent
-loading and error states.
+shows an error message. History, map, profile, and news coverage have
+independent loading and error states. The coverage request starts when
+someone scrolls to it or follows its dashboard link.
 
 [`ActivityMap.tsx`](../frontend/src/ActivityMap.tsx) renders bundled Natural
 Earth boundaries in Leaflet and draws occupied cells on one canvas. The
@@ -326,9 +335,9 @@ Checkpoint coverage comes from the 15-minute export clock. A fully observed
 window can contain zero matching events. A window with an absent or failed
 export has partial coverage. Its observed count remains visible, while the
 change is unavailable. The absolute difference is current minus previous.
-Percentage change divides that difference by the previous count, so a
-completed period with zero previous records has an absolute change and an
-undefined percentage. Each plotted daily value needs 96 complete exports
+Percentage change divides that difference by the previous count. Starting in
+v1.2 it requires at least 20 records in the previous period. The absolute change
+still appears for fully observed periods below that threshold. Each plotted daily value needs 96 complete exports
 and a trailing mean requires seven consecutive complete UTC days.
 
 For the latest complete 24-hour window, sample the previous 12 weekly
@@ -357,3 +366,53 @@ spike calculation compared unequal durations and omitted zero-activity days.
 The Goldstein score describes an event code's expert-assigned conflict or
 cooperation weight. It supports descriptive actor-pair summaries with those
 limits in mind.
+
+## Finding the news coverage behind a change
+
+The Events export includes `SOURCEURL`, the first news reference GDELT
+associated with each event, and `DATEADDED`, when GDELT added the event to
+its database. GNM has the event label, category, actors, and event location
+from the same record. The export does not provide the article title or its
+publication timestamp. The link list uses the source hostname, event label,
+and dashboard record time with the ingestion fallbacks described above.
+The GDELT Mentions dataset could connect additional reporting to event IDs,
+but would require its own ingest, storage, and retention. GNM uses the
+Events fields it already collects and leaves the article on the publisher's
+site. [GDELT 2.0 Events and Mentions codebook](https://data.gdeltproject.org/documentation/GDELT-Event_Codebook-V2.0.pdf)
+
+The coverage query takes the latest 20,000 matching retained records in
+timestamp and ID order before joining the raw payload for links. It keeps
+ordinary HTTP(S) URLs with a public-style hostname, omitting credentials,
+nonstandard explicit ports, and malformed references. Identical stored URLs
+after trimming share a row. The query preserves different parameters,
+fragments, paths, and schemes because they can identify different resources.
+This leaves some duplicate stories across URL variants and syndicated copies.
+Leading sources are lowercased hostnames ranked by distinct URLs in this
+slice. Their rankings describe the inspected records. The latest 12 URLs
+from the slice, or from the chosen source within it, show the latest matching
+record for each link. The dashboard labels the cap when the slice is truncated.
+
+When both matched periods have full source coverage, v1.2 subtracts previous
+counts from current counts for each category. These changes sum to the overall
+change. Selecting a category change uses the category and exact UTC bounds of
+the period with more records. The same filters apply to the map, coverage,
+and event list, and the links offer examples to inspect. They cannot identify
+what caused the difference. The link sample comes from the raw 17-day window,
+so a historical comparison can still be available after the sources have aged
+out of the database. The Goldstein actor-pair summary stays in the legacy API
+and CLI because weights assigned to event types give limited evidence about
+geopolitical tension. GDELT also offers a four-way cooperation and conflict
+classification called `QuadClass`. GNM's parser does not retain that field.
+Adding a comparable historical series would require extending ingestion and
+establishing coverage for the new classification. The existing categories give
+context for changes using the same definitions throughout the retained history.
+
+```mermaid
+flowchart LR
+  A["Two equal periods"] --> B{"All expected source updates?"}
+  B -->|Yes| C["Count change by category"]
+  B -->|Missing updates| D["Show available counts"]
+  C --> E["Open original links for either period"]
+```
+
+*Simplified comparison flow. URLs come from retained event detail, while counts come from hourly history.*
