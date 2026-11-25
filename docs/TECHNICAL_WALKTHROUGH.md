@@ -73,16 +73,21 @@ coded reports describe the same real-world event.
 
 [`categorize_event`](../src/domain/events/categorization.py) applies cyber
 rules, then crisis rules, then a mapping from the two-digit CAMEO root to the
-dashboard's primary categories. Cyber and crisis rules inspect the event code
-and keywords in actor names, the location label, and the source URL. They do
-not analyze article text. An unmatched code falls back to politics with a
-low rule score and a recorded reason. The stored `category_confidence` is
-assigned by the rule and has no empirical probability calibration.
+dashboard's primary categories. Cyber and crisis overrides look for specific
+terms in actor names, the location label, and the last three URL path segments.
+The rules use word boundaries and keep publisher names and URL query parameters
+out of this inference. Generic intelligence sharing and appeals follow their
+CAMEO root unless the available context supports an override. Root `15`, which
+describes military or police posture, now contributes to Conflict & military.
+The dashboard uses Statements & diplomacy for the broad group of statements,
+appeals, consultation, and related actions. An unmatched code falls back to
+politics with a low rule score and a recorded reason. `category_confidence`
+is assigned by the rule and has no empirical probability calibration. The
+rules infer only from recorded metadata. [Quality follow-up](V1.2_QUALITY_VALIDATION.md)
 
-[`get_event_label`](../src/main.py) separately renders a readable CAMEO label.
-It checks the exact code first, falls back to the root label, and reports an
-unknown event if neither lookup succeeds. The event feed exposes both the
-label and original code.
+[`get_event_label`](../src/main.py) uses the pinned dictionary for the exact
+CAMEO code and shortens a few descriptions for display. Unrecognized codes
+show as unknown. The event feed exposes both the label and the original code.
 
 ## Persistence and important queries
 
@@ -388,12 +393,19 @@ after trimming share a row. The query preserves different parameters,
 fragments, paths, and schemes because they can identify different resources.
 This leaves some duplicate stories across URL variants and syndicated copies.
 Leading sources are lowercased hostnames ranked by distinct URLs in this
-slice. Their rankings describe the inspected records. The latest 12 URLs
-from the slice, or from the chosen source within it, show the latest matching
-record for each link. The dashboard labels the cap when the slice is truncated.
+slice. The dashboard labels the cap when the slice is truncated. Most recent
+uses time and event ID. Varied sources draws from the newest 72 candidate URLs,
+brings two links per host into each round, and orders by hour and record detail
+within the round. The detail check uses the presence of a valid action code,
+two distinct actor names, and known location precision. Exact localization and
+many similar records offer little evidence about whether an article supports
+the coded event, so neither receives a special boost. A source filter uses
+recent order. Both views show the latest matching record for each link and use
+the same input counts. The API event list still exposes individual records.
 
-When both matched periods have full source coverage, v1.2 subtracts previous
-counts from current counts for each category. These changes sum to the overall
+When both matched periods have full source coverage and consistent category
+rules, v1.2 subtracts previous counts from current counts for each category.
+These changes sum to the overall
 change. Selecting a category change uses the category and exact UTC bounds of
 the period with more records. The same filters apply to the map, coverage,
 and event list, and the links offer examples to inspect. They cannot identify
@@ -404,8 +416,7 @@ and CLI because weights assigned to event types give limited evidence about
 geopolitical tension. GDELT also offers a four-way cooperation and conflict
 classification called `QuadClass`. GNM's parser does not retain that field.
 Adding a comparable historical series would require extending ingestion and
-establishing coverage for the new classification. The existing categories give
-context for changes using the same definitions throughout the retained history.
+establishing coverage for the new classification.
 
 ```mermaid
 flowchart LR
@@ -416,3 +427,23 @@ flowchart LR
 ```
 
 *Simplified comparison flow. URLs come from retained event detail, while counts come from hourly history.*
+
+### Recategorizing retained history
+
+Revision `0012_category_quality` applies the same v1.2 rules to retained rows
+that new ingestion uses. Updates pass through the existing rollup triggers,
+which move the affected counts between categories in the same transaction. The
+migration keeps earlier category values for changed rows until their detail
+expires. It records the latest archive hour with counts beyond the available
+detail. Category comparisons and the weekly category baseline use only hours
+after that point. Earlier category counts are retained with their original
+definitions, and totals across all categories remain usable.
+
+The parser preserves `ActionGeo_Type` and both CAMEO actor-country fields for
+new exports. The backfill script stores old fields in a small table beside the
+original payload. It requires the completed export slot, unambiguous global
+event ID, and matching original date, action code, country code, and URL. A
+missing archive or different row leaves that context unknown. The original
+payload stays intact. If verified type `0` conflicts with stored map coordinates,
+the normalized coordinates and geolocated count are corrected together.
+[Backfill and rollback rehearsal](V1.2_QUALITY_VALIDATION.md#migration-recovery-and-archive-limits)

@@ -10,7 +10,7 @@ The public site runs v1.1. The v1.2 dashboard is available for local review on t
 
 - Use the **map** or country selector to see where event records are concentrated. A country profile shows its most reported locations and opens a country-specific view of the coverage.
 - Use **Trends** to compare equal periods. In v1.2, an available comparison also shows how each category contributed to the difference and lets you open coverage for the period you want to inspect.
-- Open **News coverage** in v1.2 to follow original source links by country, event category, and time. The panel counts distinct stored URLs across the recent records it inspects. **Event records** shows the underlying entries individually.
+- Open **News coverage** in v1.2 to explore original GDELT links by country, category, and time. Switch between varied sources and most recent links, and open each record’s coded details. **Event records** shows the underlying entries individually.
 
 The GDELT Project identifies events in news coverage using automated coding. Its records reflect which sources it collects and how those sources report. The same article can produce several records, and differences in record counts say more about reporting patterns than the severity of what happened. [GDELT Events codebook](https://data.gdeltproject.org/documentation/GDELT-Event_Codebook-V2.0.pdf)
 
@@ -43,4 +43,4 @@ flowchart LR
 | How to run and test the project yourself | [Local setup](docs/LOCAL_DEVELOPMENT.md) |
 | Request parameters and response shapes | [API reference](docs/API_REFERENCE.md) |
 | Azure setup, roles, monitoring, backups, and recovery | [Deployment guide](docs/DEPLOYMENT.md) |
-| What was verified at each release | [v1.1 validation](docs/V1.1_VALIDATION.md) · [v1.2 local validation](docs/V1.2_VALIDATION.md) |
+| What was verified at each release | [v1.1 validation](docs/V1.1_VALIDATION.md) · [v1.2 local validation](docs/V1.2_VALIDATION.md) · [v1.2 quality follow-up](docs/V1.2_QUALITY_VALIDATION.md) |

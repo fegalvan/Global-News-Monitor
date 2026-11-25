@@ -1,5 +1,7 @@
 # News relevance audit for the v1.2 preview
 
+This audit records the preview before the targeted corrections. [Implementation and validation follow-up](V1.2_QUALITY_VALIDATION.md)
+
 **The reported piece is an obituary.** Both GDELT records turn a reference to military service in Vietnam into apparent current activity there. The audit found two problems in GNM itself as well. Some rules assign Cyber and Crisis labels without enough context, and the parser drops fields the event display needs to explain geographic precision.
 
 **Release recommendation.** Before deploying, identify the cards as original GDELT references and address the narrow GNM rules and metadata gaps below. Keep all original records and current analytics available while testing any relevance changes. The audit does not support replacing the current totals with a broadly filtered feed.

@@ -35,7 +35,7 @@ classification labels and source links as references to the reporting used by GD
 | `GET /countries` | None | Static catalogue of FIPS event geography codes |
 | `GET /country-profile` | Shared filters with a required mapped `country`, `include_sources=false` to skip domain counts | Leading location names and, by default, source domains by record count |
 | `GET /history` | Shared country and category filters and selected end | Coverage, matched comparisons, category changes, daily trend, and anomaly status |
-| `GET /coverage` | Shared filters, optional source `domain` | Counts, up to eight leading domains, and up to 12 recent unique links |
+| `GET /coverage` | Shared filters, optional source `domain`, `order=recent` (default) or `varied` | Counts, up to eight leading domains, and up to 12 original links with GDELT record context |
 | `GET /health/monitor` | None | Scheduler heartbeat, freshness, and overdue export slots |
 | `GET /freshness` | `max_age_minutes` (1–1440, default 60) | Source, ingestion, and event timestamps plus a status |
 | `GET /spikes` | Shared filters optional, `hours` (1–720, default 24) | `rows` with resolved `filters`, or `hours` in the legacy form |
@@ -70,7 +70,7 @@ the record lacks a valid pair. These are the fields on an example row:
 {
   "event_id": 101, "global_event_id": null,
   "event_time_utc": "2026-11-23T23:45:00+00:00", "event_date": "2026-11-23",
-  "event_code": "044", "original_event_code": "044", "event_label": "Meet",
+  "event_code": "044", "original_event_code": "044", "event_label": "Meet at a third location",
   "actor1_name": null, "actor2_name": null,
   "country_code": "US", "country_name": "United States", "location_name": null,
   "latitude": null, "longitude": null,
@@ -136,11 +136,13 @@ records matching the filters at most, ordered by time and then event ID.
 `linked_records` counts inspected records with a usable URL. `unique_urls`
 counts distinct trimmed stored URL strings. `domains` ranks up to eight
 lowercased hostnames by unique links, with both `articles` and `records`
-counts. `articles` lists up to 12 links by the latest matching record time
-and ID. Each includes the original URL, domain, record count, record time,
-GNM category, and CAMEO label. A `domain` narrows the link list. The totals
-and domain counts continue to describe the full inspected sample. Historic
-links only exist where the 17-day event detail is retained.
+counts. `articles` lists up to 12 links. Each includes the original URL,
+domain, record count, record time, GNM category, CAMEO code and label, actor names,
+location name and precision, and `gdelt_id` when available. `order=varied`
+applies source diversity and record detail to the newest 72 candidate URLs.
+A `domain` narrows the link list and uses recent order. Totals and domain
+counts describe the same inspected sample for either order. Historic links
+only exist where the 17-day event detail is retained.
 
 **Reporting history.** The comparison windows end on a complete UTC-hour
 boundary. `absolute_change` is null when either window lacks a completed
@@ -148,6 +150,11 @@ source export. `percent_change` also requires at least 20 records in the
 previous period. When querying all categories, `category_changes` gives
 current and previous counts and the signed difference by category. It is
 empty if either window is incomplete and omitted for a single category.
+If archived records still use the former category rules, `category_history_from`
+gives the first comparable hour. `category_rules_changed` marks affected
+comparisons. The overall record totals remain comparable, while category
+differences and category anomaly scores require consistent rules. The daily
+category series leaves earlier values as gaps.
 See the [walkthrough](TECHNICAL_WALKTHROUGH.md#compare-equal-periods-and-gate-the-score-on-coverage)
 for the baseline, missing values, and anomaly thresholds.
 

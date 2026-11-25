@@ -5,8 +5,11 @@ See the [Azure runbook](#azure-production-deployment) for the deployed services,
 rollout commands, and security checks. Hosting estimates are in USD and were
 checked November 23, 2026. Taxes, domain renewals, and usage overages may add cost.
 
-The v1.2 candidate is available for local review. Its new queries use the
-existing schema and runtime grants. [Local validation](V1.2_VALIDATION.md)
+The v1.2 candidate is available for local review. The release-quality changes
+include revision `0012_category_quality`, which recategorizes retained records
+and grants the existing API role read access to the two new read tables.
+See the [quality follow-up](V1.2_QUALITY_VALIDATION.md) for rehearsal, recovery,
+source context backfill, and archive limits. Production deployment remains on v1.1.
 
 ## Hosting options evaluated
 
