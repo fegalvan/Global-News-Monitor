@@ -90,7 +90,7 @@ def test_quality_migration_and_rollback():
                 connection.execute("DELETE FROM ingestion_runs WHERE id = %s", (run,))
 
 
-def test_v12_reclassification_updates_rollups_and_reverses_before_ingestion():
+def test_v12_reclassification_updates_rollups_and_reverses_before_ingestion(monkeypatch):
     url = os.getenv("TEST_MIGRATION_DATABASE_URL")
     if not url:
         pytest.skip("Set TEST_MIGRATION_DATABASE_URL to the dedicated loopback migration database.")
@@ -120,6 +120,21 @@ def test_v12_reclassification_updates_rollups_and_reverses_before_ingestion():
         """, (run, str(run), Jsonb(payload))).fetchone()["event_id"]
         connection.execute("INSERT INTO event_hourly_counts VALUES (%s, 'MY', 'Malaysia', 'cyber', 0, 0, 2)", (archived,))
         try:
+            from src.domain.events import categorization
+
+            def fail_reclassification(_row):
+                raise RuntimeError("Interrupted classification")
+
+            with monkeypatch.context() as patch:
+                patch.setattr(categorization, "categorize_event_v12", fail_reclassification)
+                with pytest.raises(RuntimeError, match="Interrupted classification"):
+                    command.upgrade(config, "head")
+
+            assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == V11
+            assert connection.execute("SELECT to_regclass('gdelt_event_context') AS tab").fetchone()["tab"] is None
+            assert connection.execute("SELECT primary_category FROM normalized_events WHERE event_id = %s",
+                                      (event_id,)).fetchone()["primary_category"] == "cyber"
+
             command.upgrade(config, "head")
             revision = connection.execute("TABLE event_category_revision").fetchone()
             assert revision["corrected_from"] == datetime(2026, 11, 21, 18, tzinfo=timezone.utc)
@@ -137,6 +152,18 @@ def test_v12_reclassification_updates_rollups_and_reverses_before_ingestion():
             assert connection.execute("SELECT primary_category FROM normalized_events WHERE event_id = %s",
                                       (event_id,)).fetchone()["primary_category"] == "cyber"
             assert connection.execute("SELECT sum(historical_count) AS n FROM event_hourly_counts WHERE country_code = 'MY' AND primary_category = 'cyber'").fetchone()["n"] == 3
+
+            command.upgrade(config, "head")
+            last_id = connection.execute("SELECT last_value FROM normalized_events_event_id_seq").fetchone()["last_value"]
+            connection.execute("SELECT nextval('normalized_events_event_id_seq')")
+            try:
+                from sqlalchemy.exc import DBAPIError
+
+                with pytest.raises(DBAPIError, match="Events have been written or pruned"):
+                    command.downgrade(config, V11)
+                assert connection.execute("SELECT version_num FROM alembic_version").fetchone()["version_num"] == "0012_category_quality"
+            finally:
+                connection.execute("SELECT setval('normalized_events_event_id_seq', %s)", (last_id,))
         finally:
             if connection.execute("SELECT to_regclass('event_category_revision') AS tab").fetchone()["tab"]:
                 command.downgrade(config, V11)
