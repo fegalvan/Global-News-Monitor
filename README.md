@@ -4,7 +4,7 @@ Global News Monitor helps you see where events are being reported around the wor
 
 **[Open the live dashboard](https://global-news-monitor.northcentralus.cloudapp.azure.com/)** · **[Read the development story](docs/DEVELOPMENT_JOURNEY.md)**
 
-The public site runs v1.2. The deployment and verification results are recorded on the development branch. [v1.2 production validation](docs/V1.2_PRODUCTION_VALIDATION.md) · [v1.1 GitHub release](https://github.com/fegalvan/Global-News-Monitor/releases/tag/v1.1.0)
+The public site runs v1.2.0. [v1.2.0 GitHub release](https://github.com/fegalvan/Global-News-Monitor/releases/tag/v1.2.0) · [v1.2 production validation](docs/V1.2_PRODUCTION_VALIDATION.md)
 
 ## What you can explore
 
