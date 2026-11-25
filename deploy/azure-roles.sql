@@ -13,6 +13,7 @@ GRANT USAGE ON SCHEMA public TO gnm_api, gnm_ingest;
 GRANT SELECT ON raw_events, normalized_events, ingestion_runs, gdelt_export_checkpoints
     TO gnm_api;
 GRANT SELECT ON event_hourly_counts, event_history_coverage, scheduler_health TO gnm_api;
+GRANT SELECT ON gdelt_event_context, event_category_revision TO gnm_api;
 GRANT SELECT, INSERT, UPDATE ON scheduler_health TO gnm_ingest;
 GRANT EXECUTE ON FUNCTION prune_event_history() TO gnm_ingest;
 

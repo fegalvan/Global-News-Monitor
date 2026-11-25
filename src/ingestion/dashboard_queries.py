@@ -30,6 +30,10 @@ class EventFilters:
 VALID_COORDINATES = "latitude BETWEEN -90 AND 90 AND longitude BETWEEN -180 AND 180"
 MAP_CELL_LIMIT = 500
 COUNTRY_LIMIT = 250
+GEOGRAPHIC_PRECISION_SQL = """CASE coalesce(btrim(r.raw_payload ->> 'ActionGeo_Type'), c.action_geo_type::text)
+    WHEN '0' THEN 'none' WHEN '1' THEN 'country' WHEN '2' THEN 'administrative_area'
+    WHEN '3' THEN 'locality' WHEN '4' THEN 'locality' WHEN '5' THEN 'administrative_area'
+    ELSE 'unknown' END"""
 
 
 def fetch_events(connection, filters: EventFilters, *, limit: int, before: tuple | None):
@@ -57,18 +61,15 @@ def fetch_events(connection, filters: EventFilters, *, limit: int, before: tuple
                r.global_event_id, r.raw_payload ->> 'EventCode' AS original_event_code,
                r.raw_payload ->> 'SOURCEURL' AS source_url, r.validation_flags,
                r.raw_payload ->> 'ActionGeo_CountryCode' AS original_country_code,
-               r.raw_payload ->> 'Actor1CountryCode' AS actor1_country_code,
-               r.raw_payload ->> 'Actor2CountryCode' AS actor2_country_code,
-               CASE btrim(r.raw_payload ->> 'ActionGeo_Type')
-                   WHEN '0' THEN 'none' WHEN '1' THEN 'country'
-                   WHEN '2' THEN 'administrative_area' WHEN '3' THEN 'locality'
-                   WHEN '4' THEN 'locality' WHEN '5' THEN 'administrative_area'
-                   ELSE 'unknown' END AS geographic_precision,
+               coalesce(r.raw_payload ->> 'Actor1CountryCode', c.actor1_country_code) AS actor1_country_code,
+               coalesce(r.raw_payload ->> 'Actor2CountryCode', c.actor2_country_code) AS actor2_country_code,
+               {GEOGRAPHIC_PRECISION_SQL} AS geographic_precision,
                CASE WHEN page.country_name <> 'Unknown' AND page.country_code IS NOT NULL THEN 'mapped'
                    WHEN r.validation_flags ? 'unmapped_country_code' THEN 'unmapped'
                    ELSE 'missing' END AS country_status
         FROM page
         JOIN raw_events r ON r.id = page.raw_event_id
+        LEFT JOIN gdelt_event_context c ON c.raw_event_id = r.id
         ORDER BY page.event_time_utc DESC, page.event_id DESC
         """,
         (*params, limit + 1),

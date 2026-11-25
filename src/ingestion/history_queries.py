@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from math import sqrt
 from statistics import median
 
-from src.db import fetch_all
+from src.db import fetch_all, fetch_one
 
 MIN_PERCENT_BASELINE = 20
 
@@ -102,6 +102,13 @@ def reporting_anomaly(current: dict, baseline: list[dict]) -> dict:
 
 def fetch_history(connection, end: datetime, country: str | None, category: str | None) -> dict:
     end = end.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    boundary = fetch_one(connection, """
+        SELECT corrected_from FROM event_category_revision WHERE rule_version = 'v1.2'
+    """)["corrected_from"]
+
+    def comparable(period: dict) -> bool:
+        return boundary is None or period["start"] >= boundary
+
     day, week = timedelta(days=1), timedelta(days=7)
     periods = [(end - day, end), (end - 2 * day, end - day), (end - week, end), (end - 2 * week, end - week)]
     periods += [(end - n * week - day, end - n * week) for n in range(1, 13)]
@@ -114,18 +121,27 @@ def fetch_history(connection, end: datetime, country: str | None, category: str 
         country, category,
     )
     for row in daily:
-        row["count"] = full_observation(row)
+        row["count"] = full_observation(row) if not category or comparable(row) else None
     for index in range(6, len(daily)):
         counts = [row["count"] for row in daily[index - 6:index + 1]]
         daily[index]["rolling_average"] = None if None in counts else sum(counts) / 7
     comparison_24h = compare_periods(results[0], results[1])
     comparison_7d = compare_periods(results[2], results[3])
-    if not category:
-        for comparison in (comparison_24h, comparison_7d):
+    for comparison in (comparison_24h, comparison_7d):
+        if not comparable(comparison["previous"]):
+            comparison["category_rules_changed"] = True
+            if category:
+                comparison.update(absolute_change=None, percent_change=None)
+        elif not category:
             comparison["category_changes"] = fetch_category_changes(connection, comparison, country)
+    baseline = [period for period in results[4:] if not category or comparable(period)]
+    anomaly = reporting_anomaly(results[0], baseline)
+    if category and not comparable(results[0]):
+        anomaly.update(status="category_rules_changed", observed=None, score=None)
     return {
         "comparison_24h": comparison_24h,
         "comparison_7d": comparison_7d,
-        "anomaly": reporting_anomaly(results[0], results[4:]),
+        "anomaly": anomaly,
         "daily": daily[6:],
+        "category_history_from": boundary,
     }

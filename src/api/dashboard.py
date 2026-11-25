@@ -178,12 +178,13 @@ def history(params: DashboardFilters):
 def coverage(
     params: DashboardFilters,
     domain: Annotated[str | None, Query(max_length=253, pattern=r"^[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z][a-zA-Z0-9-]*$")] = None,
+    order: Literal["recent", "varied"] = "recent",
 ):
     filters = params.window()
     with get_connection() as connection:
-        result = fetch_source_coverage(connection, filters, domain.lower() if domain else None)
+        result = fetch_source_coverage(connection, filters, domain.lower() if domain else None, order=order)
     for article in result["articles"]:
-        article["event_label"] = get_event_label(article.pop("event_code") or "")
+        article["event_label"] = get_event_label(article["event_code"] or "")
     return {"filters": filters, **result}
 
 

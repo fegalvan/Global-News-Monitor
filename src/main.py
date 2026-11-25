@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.domain.events.categorization import categorize_event
+from src.domain.events.reference import EVENT_LABELS, normalize_event_code
 from src.connectors.gdelt import fetch_latest_events
 from src.db import get_connection
 from src.ingestion.repository import (
@@ -20,83 +21,14 @@ from src.ingestion.repository import (
 )
 from src.pipeline.ingest_service import ingest_latest_export
 
-EVENT_CODE_LABELS = {
-    "020": "Appeal",
-    "021": "Appeal for material cooperation",
-    "023": "Appeal for humanitarian aid",
-    "025": "Appeal for policy change",
-    "030": "Express intent to cooperate",
-    "031": "Express intent to engage in material cooperation",
-    "032": "Express intent to provide aid",
+# A few display labels shorten the pinned descriptions without changing their meaning.
+SHORT_EVENT_LABELS = {
     "040": "Consult",
-    "042": "Make a visit",
-    "043": "Host a visit",
-    "044": "Meet",
-    "050": "Engage in diplomatic cooperation",
-    "051": "Praise or endorse",
-    "052": "Defend verbally",
-    "053": "Rally support",
-    "060": "Engage in material cooperation",
-    "061": "Cooperate economically",
-    "062": "Provide financial assistance",
-    "064": "Share intelligence or information",
-    "070": "Provide aid",
-    "071": "Provide humanitarian aid",
-    "072": "Provide military aid",
-    "080": "Yield",
-    "081": "Ease sanctions",
-    "084": "Release or return person/property",
-    "090": "Investigate",
-    "091": "Investigate crime",
-    "100": "Demand",
-    "101": "Demand policy change",
-    "110": "Disapprove",
-    "112": "Criticize",
-    "120": "Reject",
-    "121": "Reject proposal",
-    "130": "Threaten",
-    "131": "Threaten sanctions",
-    "140": "Protest",
-    "141": "Demonstrate or rally",
+    "044": "Meet at a third location",
     "145": "Violent protest",
-    "150": "Exhibit force",
-    "151": "Increase police presence",
-    "154": "Mobilize forces",
-    "155": "Mobilize cyber forces",
-    "170": "Coerce",
-    "172": "Military attack",
-    "173": "Arrest or detain",
-    "174": "Expel or deport",
-    "176": "Cyber attack",
-    "180": "Assault",
-    "181": "Conduct armed assault",
-    "190": "Fight",
-    "193": "Fight with small arms",
-    "200": "Use unconventional violence",
+    "190": "Use conventional military force",
 }
 
-ROOT_EVENT_LABELS = {
-    "01": "Public statement",
-    "02": "Appeal",
-    "03": "Intent to cooperate",
-    "04": "Consult",
-    "05": "Diplomatic cooperation",
-    "06": "Material cooperation",
-    "07": "Provide aid",
-    "08": "Yield",
-    "09": "Investigate",
-    "10": "Demand",
-    "11": "Disapprove",
-    "12": "Reject",
-    "13": "Threaten",
-    "14": "Protest",
-    "15": "Exhibit force",
-    "16": "Reduce relations",
-    "17": "Coerce",
-    "18": "Assault",
-    "19": "Fight",
-    "20": "Unconventional violence",
-}
 
 MAX_EVENTS_PER_CATEGORY = 3
 MAX_BREAKING_EVENTS = 5
@@ -142,14 +74,11 @@ def get_event_category(event_code: str) -> str:
 
 
 def get_event_label(event_code: str) -> str:
-    from src.domain.events.reference import EVENT_LABELS
-
-    event_label = EVENT_CODE_LABELS.get(event_code)
-
-    if not event_label:
-        event_label = EVENT_LABELS.get(event_code, "Unknown event")
-
-    return event_label
+    code = normalize_event_code(event_code)
+    if code is None:
+        return "Unknown event"
+    label = SHORT_EVENT_LABELS.get(code, EVENT_LABELS[code])
+    return label.capitalize() if len(code) == 2 else label
 
 
 def get_avg_tone(event: dict[str, str]) -> float:
@@ -221,10 +150,10 @@ def _translation_tier(event_code: str | None) -> str:
     if not cleaned:
         return "unknown"
 
-    if cleaned in EVENT_CODE_LABELS:
+    if len(cleaned) > 2 and normalize_event_code(cleaned):
         return "exact"
 
-    if cleaned[:2] in ROOT_EVENT_LABELS:
+    if normalize_event_code(cleaned[:2]):
         return "root"
 
     return "unknown"

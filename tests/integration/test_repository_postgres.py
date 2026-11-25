@@ -36,6 +36,7 @@ from src.ingestion.repository import (
     update_ingestion_run,
 )
 from src.ingestion.validation import validate_and_clean_event
+from src.ingestion.source_context import restore_source_context
 from src.pipeline import ingest_service, scheduled_ingest
 
 
@@ -178,7 +179,7 @@ def test_dashboard_events_filter_and_paginate(dashboard_client, dashboard_window
     first = first.json()
     assert first["filters"]["country"] == "USA"
     assert len(first["rows"]) == 2
-    assert first["rows"][0]["event_label"] == "Fight"
+    assert first["rows"][0]["event_label"] == "Use conventional military force"
     assert first["rows"][0]["event_code"] == "190"
     assert first["rows"][0]["original_event_code"] == "190"
     assert first["rows"][0]["location_name"] == "Washington, DC"
@@ -750,7 +751,8 @@ def test_news_coverage_groups_exact_urls_and_checks_scope(dashboard_client, pg_c
     assert (body["inspected_records"], body["linked_records"], body["unique_urls"], body["truncated"]) == (10, 4, 3, False)
     assert body["domains"][0] == {"domain": "example.com", "articles": 2, "records": 3}
     first = body["articles"][0]
-    assert (first["url"], first["record_count"], first["category"], first["event_label"]) == (source, 2, "diplomacy", "Meet")
+    assert (first["url"], first["record_count"], first["category"]) == (source, 2, "diplomacy")
+    assert (first["event_code"], first["event_label"]) == ("044", "Meet at a third location")
 
     filtered = dashboard_client.get("/coverage", params={**filters, "domain": "EXAMPLE.COM", "category": "conflict"}).json()
     assert filtered["unique_urls"] == 3
@@ -809,3 +811,73 @@ def test_legacy_momentum_uses_hourly_rates_on_both_sides(pg_connection):
     ])
     result, = pg_connection.execute(MOMENTUM_SQL).fetchall()
     assert (result["c_3h"], result["c_24h_hourly_avg"], result["momentum_ratio"]) == (3, 1, 1)
+
+
+def test_context_backfill_matches_archived_identity_and_keeps_raw_unchanged(dashboard_client, pg_connection):
+    run_id = uuid4()
+    insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+    event = _build_event(run_id, "verify-source-context")
+    payload = {"GLOBALEVENTID": "100", "SQLDATE": "20260315", "DATEADDED": "20260315000000",
+               "EventCode": "190", "ActionGeo_CountryCode": "USA", "SOURCEURL": "https://example.org/page"}
+    insert_raw_and_normalized_batch(pg_connection, [dict(event, raw_payload=payload)])
+    slot = event["export_time_utc"]
+    pg_connection.execute("""
+        INSERT INTO gdelt_export_checkpoints (export_time_utc, export_url, export_filename, status)
+        VALUES (%s, 'fixture', 'fixture', 'completed')
+    """, (slot,))
+    archive = dict(payload, ActionGeo_Type="0", Actor1CountryCode="GBR", Actor2CountryCode="")
+    rejected = restore_source_context(pg_connection, slot, [dict(archive, SOURCEURL="https://example.org/other")], apply=True)
+    assert rejected["identity_mismatch"] == 1 and rejected["written"] == 0
+    ambiguous = restore_source_context(pg_connection, slot, [archive, dict(archive, ActionGeo_Type="1")], apply=True)
+    assert ambiguous["missing_or_ambiguous_id"] == 1 and ambiguous["written"] == 0
+    assert restore_source_context(pg_connection, slot, [archive])["matched"] == 1
+    assert pg_connection.execute("SELECT count(*) AS n FROM gdelt_event_context").fetchone()["n"] == 0
+    applied = restore_source_context(pg_connection, slot, [archive], apply=True)
+    assert (applied["written"], applied["cleared_coordinates"]) == (1, 1)
+    assert restore_source_context(pg_connection, slot, [archive], apply=True)["written"] == 0
+    assert pg_connection.execute("SELECT raw_payload FROM raw_events").fetchone()["raw_payload"] == payload
+    assert pg_connection.execute("SELECT live_count, historical_count, live_geolocated FROM event_hourly_counts").fetchone() == {
+        "live_count": 1, "historical_count": 1, "live_geolocated": 0,
+    }
+    window = {"start": event["event_time_utc"].isoformat(), "end": (slot + timedelta(hours=1)).isoformat()}
+    row, = dashboard_client.get("/events", params=window).json()["rows"]
+    assert row["geographic_precision"] == "none" and row["latitude"] is None
+    assert row["actor1_country_name"] == "United Kingdom" and row["actor2_country_name"] is None
+
+
+def test_varied_coverage_orders_hosts_without_changing_counts(dashboard_client, pg_connection, dashboard_window):
+    run_id = uuid4()
+    insert_ingestion_run(pg_connection, run_id=run_id, trigger_mode="manual", status="started")
+    common = _build_event(run_id, "unused")
+    rows = [dict(common, dedupe_key=f"variety-{index}",
+                 raw_payload={"EventCode": "190", "ActionGeo_Type": "3", "SOURCEURL": url})
+            for index, url in enumerate(["https://another.example/story", "https://www.example.com/first",
+                                        "https://example.com/second", "https://example.com/third"])]
+    insert_raw_and_normalized_batch(pg_connection, rows)
+    filters = {**dashboard_window, "country": "USA"}
+    older = dashboard_client.get("/coverage", params=filters).json()
+    varied = dashboard_client.get("/coverage", params={**filters, "order": "varied"}).json()
+    assert older["articles"][3]["domain"] == "another.example"
+    assert varied["articles"][2]["domain"] == "another.example"
+    assert varied["articles"][0]["geographic_precision"] == "locality"
+    assert varied["articles"][0]["actor1_name"] == "POLICE"
+    assert varied["unique_urls"] == older["unique_urls"] == 4
+    assert varied["linked_records"] == older["linked_records"] == 4
+
+
+def test_archived_rule_boundary_preserves_world_totals_but_withholds_category_changes(dashboard_client, pg_connection):
+    end = datetime(2026, 3, 15, tzinfo=timezone.utc)
+    cutoff = end - timedelta(days=1)
+    pg_connection.execute("UPDATE event_category_revision SET corrected_from = %s", (cutoff,))
+    pg_connection.execute("""
+        INSERT INTO event_history_coverage
+        SELECT stamp FROM generate_series(%s::timestamptz, %s::timestamptz, interval '15 minutes') AS slots(stamp)
+    """, (cutoff - timedelta(days=1), end - timedelta(minutes=15)))
+    params = {"end": end.isoformat()}
+    overall = dashboard_client.get("/history", params=params).json()
+    filtered = dashboard_client.get("/history", params={**params, "category": "cyber"}).json()
+    assert overall["comparison_24h"]["absolute_change"] == 0
+    assert overall["comparison_24h"]["category_rules_changed"]
+    assert "category_changes" not in overall["comparison_24h"]
+    assert filtered["comparison_24h"]["absolute_change"] is None
+    assert filtered["daily"][-1]["count"] == 0 and filtered["daily"][-2]["count"] is None

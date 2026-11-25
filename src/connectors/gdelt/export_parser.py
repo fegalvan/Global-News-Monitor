@@ -11,31 +11,17 @@ import re
 from typing import Any, Iterator
 from urllib.parse import urlparse
 
-# fields we actually care about from the giant gdelt dataset
-FIELDS_TO_KEEP = (
-    "GLOBALEVENTID",
-    "SQLDATE",
-    "DATEADDED",
-    "Actor1Name",
-    "Actor2Name",
-    "EventCode",
-    "GoldsteinScale",
-    "ActionGeo_FullName",
-    "ActionGeo_CountryCode",
-    "ActionGeo_Lat",
-    "ActionGeo_Long",
-    "AvgTone",
-    "SOURCEURL",
-)
-
 FIELD_INDEXES = {
     "GLOBALEVENTID": 0,
     "SQLDATE": 1,
     "DATEADDED": 59,
     "Actor1Name": 6,
+    "Actor1CountryCode": 7,
     "Actor2Name": 16,
+    "Actor2CountryCode": 17,
     "EventCode": 26,
     "GoldsteinScale": 30,
+    "ActionGeo_Type": 51,
     "ActionGeo_FullName": 52,
     "ActionGeo_CountryCode": 53,
     "ActionGeo_Lat": 56,
@@ -43,6 +29,7 @@ FIELD_INDEXES = {
     "AvgTone": 34,
     "SOURCEURL": 60,
 }
+FIELDS_TO_KEEP = tuple(FIELD_INDEXES)
 
 EXPORT_FILENAME_PATTERN = re.compile(r"(?P<timestamp>\d{14})\.export\.CSV\.zip$")
 

@@ -60,9 +60,20 @@ def test_translation_tier_classifies_codes():
     from src.main import _translation_tier
 
     assert _translation_tier("190") == "exact"
-    assert _translation_tier("194") == "root"
+    assert _translation_tier("194") == "exact"
+    assert _translation_tier("199") == "root"
     assert _translation_tier("999") == "unknown"
     assert _translation_tier("") == "unknown"
+
+
+def test_event_label_describes_pinned_action():
+    from src.main import get_event_label
+
+    assert get_event_label("025") == "Appeal to yield"
+    assert get_event_label("0233") == "Appeal for humanitarian aid"
+    assert get_event_label("071") == "Provide economic aid"
+    assert get_event_label("172").startswith("Impose administrative sanctions")
+    assert get_event_label("176") == "Unknown event"
 
 
 def test_build_arg_parser_parses_latest_limit():

@@ -10,10 +10,13 @@ def _build_valid_row() -> str:
     row[FIELD_INDEXES["SQLDATE"]] = "20260326"
     row[FIELD_INDEXES["DATEADDED"]] = "20260326001500"
     row[FIELD_INDEXES["Actor1Name"]] = "A"
+    row[7] = "GBR"
     row[FIELD_INDEXES["Actor2Name"]] = "B"
+    row[17] = "USA"
     row[FIELD_INDEXES["EventCode"]] = "190"
     row[FIELD_INDEXES["GoldsteinScale"]] = "-3.5"
     row[FIELD_INDEXES["ActionGeo_FullName"]] = "Washington, DC"
+    row[51] = "4"
     row[FIELD_INDEXES["ActionGeo_CountryCode"]] = "USA"
     row[FIELD_INDEXES["ActionGeo_Lat"]] = "38.9072"
     row[FIELD_INDEXES["ActionGeo_Long"]] = "-77.0369"
@@ -39,6 +42,9 @@ def test_iter_zip_csv_rows_reports_parse_errors_via_callback():
     )
 
     assert len(events) == 1
+    assert events[0]["Actor1CountryCode"] == "GBR"
+    assert events[0]["Actor2CountryCode"] == "USA"
+    assert events[0]["ActionGeo_Type"] == "4"
     assert len(parse_errors) == 1
     reason, context = parse_errors[0]
     assert reason == "parse_error"
